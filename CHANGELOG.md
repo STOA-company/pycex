@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bitget spot Reality stock (rtoken) daily candles.** Those pairs reject
+  `granularity=1Dutc` with HTTP 400 `code=48001` (`Parameter validation failed
+  null`). `_fetch_candles_page` now retries `1day` after that code. Crypto
+  spot still asks for `1Dutc` first so UTC midnight bars stay the default
+  (live 2026-09-20, `RAAPLUSDT` / `RSUNCUSDT`).
+
 ## [0.3.0] - 2026-09-10
 
 Hardening pass on the OKX adapter, driven by six **real-money OKX runs** on

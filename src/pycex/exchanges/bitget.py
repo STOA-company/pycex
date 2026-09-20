@@ -379,8 +379,20 @@ class Bitget(BaseExchange):
             params["startTime"] = since
         if until is not None:
             params["endTime"] = until
-        async with self._rate_limiter.request("query"):
-            data = await self._http.get(self._p("candles"), params=params)
+        # Reality stock (rtoken) spot rejects UTC-suffixed daily bars
+        # (live 2026-09-20: RAAPLUSDT + 1Dutc → HTTP 400 code 48001
+        # "Parameter validation failed null"; 1day returns bars). Crypto
+        # spot still tries 1Dutc first so UTC midnight alignment is kept.
+        try:
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get(self._p("candles"), params=params)
+        except ExchangeError as e:
+            if params.get("granularity") == "1Dutc" and str(getattr(e, "code", "") or "") == "48001":
+                params["granularity"] = "1day"
+                async with self._rate_limiter.request("query"):
+                    data = await self._http.get(self._p("candles"), params=params)
+            else:
+                raise
         # Sorted for the same reason the mix branch above is: ascending is the
         # library-wide contract, and it must not depend on which market type
         # (or which of Bitget's two candle endpoints) served the page.
