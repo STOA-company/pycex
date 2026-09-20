@@ -336,6 +336,7 @@ with Binance() as ex:
 | `min_notional` | `float \| None` | Minimum order value in quote currency |
 | `active` | `bool` | Whether the market is currently tradable |
 | `raw` | `dict` | Original exchange response |
+| `public_rules` | `dict` | Document-derived exact values, units, scope and sources; empty when not supplied |
 
 ## MyTrade
 

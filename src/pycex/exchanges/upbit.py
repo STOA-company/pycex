@@ -78,6 +78,32 @@ class Upbit(KrwV1Mixin, BaseExchange):
     def _headers(self, params: dict[str, Any] | None = None) -> dict[str, str]:
         return upbit_headers(self._api_key, self._secret, params)
 
+    async def fetch_markets(self) -> list[Market]:
+        """Include documented KRW rules without an authenticated request.
+
+        ``public_rules`` alone carries the effective market-buy fill quantum
+        in base units, derived from the FAQ's eight-decimal truncation example.
+        The generic ``amount_step`` remains unknown (None): the FAQ does not
+        establish a general order increment or a separate minimum quantity.
+        """
+        markets = await super().fetch_markets()
+        for market in markets:
+            if market.quote == "KRW":
+                market.min_notional = 5000.0
+                market.public_rules = {
+                    "amount_step": "0.00000001",
+                    "amount_unit": market.base,
+                    "amount_step_scope": "market_buy_fill",
+                    "amount_rounding": "truncate",
+                    "min_quantity": None,
+                    "min_notional": "5000",
+                    "notional_unit": "KRW",
+                    "amount_step_source": "https://docs.upbit.com/kr/docs/faq-order",
+                    "min_notional_source": "https://docs.upbit.com/kr/docs/krw-market-info",
+                    "verified_on": "2026-09-20",
+                }
+        return markets
+
     # ── Account ──
 
     async def fetch_balance(self) -> Balance:
