@@ -152,6 +152,16 @@ async def test_create_order_limit_buy(httpx_mock: HTTPXMock) -> None:
     await ex.close()
 
 
+async def test_create_order_rejects_unsupported_futures_options(httpx_mock: HTTPXMock) -> None:
+    ex = Upbit(api_key="k", secret="s")
+    with pytest.raises(NotSupportedError):
+        await ex.create_order("BTC/KRW", "buy", "market", 100_000, reduce_only=True)
+    with pytest.raises(NotSupportedError):
+        await ex.create_order("BTC/KRW", "buy", "market", 100_000, client_order_id="client-1")
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
 async def test_create_order_market_buy_uses_price_ord_type(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(method="POST", json=_order_response(ord_type="price", price="100000.0", volume=None))
     ex = Upbit(api_key="k", secret="s")

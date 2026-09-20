@@ -205,7 +205,15 @@ class Korbit(BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> Order:
         """Place an order.
 
@@ -214,6 +222,8 @@ class Korbit(BaseExchange):
         echoes exactly what the caller passed in (``id`` comes from the response,
         which for ``POST /v2/orders`` is only ``{"orderId": ...}`` — see ``raw``).
         """
+        if reduce_only or client_order_id is not None:
+            raise NotSupportedError("This adapter does not support the new futures order options")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -250,7 +260,9 @@ class Korbit(BaseExchange):
         # `{"success": true}` only — no order fields to parse; side/type stay unguessed.
         return Order(id=str(order_id), symbol=symbol, side="", type="", amount=0.0, raw=_unwrap(data) or {})
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if client_order_id is not None or order_id is None:
+            raise NotSupportedError("This adapter requires an exchange order ID")
         native = self.to_native(symbol)
         async with self._rate_limiter.request("query"):
             path = self._signed_query_path("/v2/orders", {"symbol": native, "orderId": order_id})

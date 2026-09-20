@@ -51,6 +51,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    NotSupportedError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -235,8 +236,18 @@ class Bybit(BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> Order:
+        if reduce_only or client_order_id is not None:
+            raise NotSupportedError("This adapter does not support the new futures order options")
         native = self.to_native(symbol)
         body: dict[str, Any] = {
             "category": self._category,
@@ -269,7 +280,9 @@ class Bybit(BaseExchange):
         result = self._check(data)
         return Order(id=result.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if client_order_id is not None or order_id is None:
+            raise NotSupportedError("This adapter requires an exchange order ID")
         native = self.to_native(symbol)
         params = {"category": self._category, "symbol": native, "orderId": order_id}
         full_path, headers = self._signed_get_request("/v5/order/realtime", params)

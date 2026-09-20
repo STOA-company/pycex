@@ -279,6 +279,16 @@ async def test_create_order_limit_buy(httpx_mock: HTTPXMock) -> None:
     await ex.close()
 
 
+async def test_create_order_rejects_unsupported_futures_options(httpx_mock: HTTPXMock) -> None:
+    ex = Korbit(api_key="k", secret=SECRET)
+    with pytest.raises(NotSupportedError):
+        await ex.create_order("BTC/KRW", "buy", "market", 100_000, reduce_only=True)
+    with pytest.raises(NotSupportedError):
+        await ex.create_order("BTC/KRW", "buy", "market", 100_000, client_order_id="client-1")
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
 async def test_create_order_market_buy_uses_amt(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(method="POST", json={"success": True, "data": {"orderId": 124}})
     ex = Korbit(api_key="k", secret=SECRET)
