@@ -332,10 +332,11 @@ with Binance() as ex:
 | `quote` | `str` | Quote asset |
 | `market_type` | `str` | `"spot"` or `"linear"` |
 | `price_tick` | `float \| None` | Minimum price increment |
-| `amount_step` | `float \| None` | Minimum amount increment |
+| `amount_step` | `float \| None` | Amount increment; Upbit KRW: effective market-buy fill quantum only |
 | `min_notional` | `float \| None` | Minimum order value in quote currency |
 | `active` | `bool` | Whether the market is currently tradable |
 | `raw` | `dict` | Original exchange response |
+| `public_rules` | `dict` | Document-derived exact values, units, scope and sources; empty when not supplied |
 
 ## MyTrade
 

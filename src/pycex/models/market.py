@@ -20,3 +20,4 @@ class Market(BaseModel):
     min_notional: float | None = None
     active: bool = True
     raw: dict[str, Any] = {}  # noqa: RUF012
+    public_rules: dict[str, Any] = {}  # Document-derived rules, units, scope and sources; not API raw.
