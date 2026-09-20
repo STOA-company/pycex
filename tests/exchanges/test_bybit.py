@@ -188,6 +188,7 @@ async def test_fetch_markets_spot_populates_cache(httpx_mock: HTTPXMock) -> None
     markets = await ex.fetch_markets()
     req = httpx_mock.get_request()
     assert req.url.params.get("category") == "spot"
+    assert req.url.params.get("limit") == "1000"
     assert len(markets) == 1
     assert markets[0].amount_step == 0.000001
     assert ex.from_native("BTCUSDT") == "BTC/USDT"
@@ -222,6 +223,27 @@ async def test_fetch_markets_linear_populates_cache_and_symbol(httpx_mock: HTTPX
     assert markets[0].symbol == "BTC/USDT:USDT"
     assert markets[0].min_notional == 5.0
     assert ex.from_native("BTCUSDT") == "BTC/USDT:USDT"
+    await ex.close()
+
+
+async def test_fetch_markets_walks_next_page_cursor(httpx_mock: HTTPXMock) -> None:
+    row = {
+        "symbol": "BTCUSDT",
+        "baseCoin": "BTC",
+        "quoteCoin": "USDT",
+        "status": "Trading",
+        "priceFilter": {"tickSize": "0.01"},
+        "lotSizeFilter": {"basePrecision": "0.000001", "minOrderAmt": "1"},
+    }
+    row2 = {**row, "symbol": "ETHUSDT", "baseCoin": "ETH"}
+    httpx_mock.add_response(json={"retCode": 0, "retMsg": "OK", "result": {"list": [row], "nextPageCursor": "c1"}})
+    httpx_mock.add_response(json={"retCode": 0, "retMsg": "OK", "result": {"list": [row2], "nextPageCursor": ""}})
+    ex = Bybit(api_key="k", secret=SECRET)
+    markets = await ex.fetch_markets()
+    assert [m.native for m in markets] == ["BTCUSDT", "ETHUSDT"]
+    reqs = httpx_mock.get_requests()
+    assert len(reqs) == 2
+    assert reqs[1].url.params.get("cursor") == "c1"
     await ex.close()
 
 

@@ -10,7 +10,9 @@ from pycex.exceptions import SymbolNotFoundError
 
 MarketType = Literal["spot", "linear"]
 
-_RE = re.compile(r"^([A-Z0-9]+)/([A-Z0-9]+)(?::([A-Z0-9]+))?$")
+# Quote/settle stay ASCII. Base allows Unicode letters so venue-native CJK
+# tickers (Binance ``哈基米/USDT:USDT``) parse; ``str.upper`` leaves them intact.
+_RE = re.compile(r"^([\w]+)/([A-Z0-9]+)(?::([A-Z0-9]+))?$", re.UNICODE)
 
 
 @dataclass(frozen=True)
