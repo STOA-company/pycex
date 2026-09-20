@@ -27,7 +27,7 @@ async def test_rules_cover_all_krw_and_preserve_raw(httpx_mock: HTTPXMock) -> No
                 assert market.public_rules == {}
                 continue
             rules = market.public_rules
-            assert Decimal(str(market.amount_step)) == Decimal("0.00000001")
+            assert market.amount_step is None
             assert Decimal(str(market.min_notional)) == Decimal("5000")
             assert rules["amount_step"] == "0.00000001"
             assert rules["min_notional"] == "5000"
@@ -37,7 +37,7 @@ async def test_rules_cover_all_krw_and_preserve_raw(httpx_mock: HTTPXMock) -> No
             assert rules["amount_step_scope"] == "market_buy_fill"
             assert rules["amount_rounding"] == "truncate"
             assert rules["verified_on"] == "2026-09-20"
-            assert rules["amount_step_source"] == "https://docs.upbit.com/kr/kr/docs/faq-order"
+            assert rules["amount_step_source"] == "https://docs.upbit.com/kr/docs/faq-order"
             assert rules["min_notional_source"] == "https://docs.upbit.com/kr/docs/krw-market-info"
             assert market.model_validate_json(market.model_dump_json()).public_rules == rules
     requests = httpx_mock.get_requests()

@@ -766,8 +766,9 @@ with Binance() as ex:
 ### Upbit KRW public market rules
 
 `Upbit().fetch_markets()` uses only the public market-list GET. For every
-KRW-quoted market, `min_notional=5000.0` is in KRW and `amount_step=1e-8` is
-an **effective market-buy fill quantum in base-asset units**. The latter is
+KRW-quoted market, `min_notional=5000.0` is in KRW. The generic
+`Market.amount_step` remains `None`. Only `public_rules["amount_step"]`
+provides an **effective market-buy fill quantum in base-asset units**. It is
 derived from the FAQ's eight-decimal truncation example; it does not establish
 a separate minimum base quantity or a general limit/sell input restriction.
 `price_tick` remains unset: price tiers cannot be represented by this quantity
@@ -788,7 +789,7 @@ Sources checked **2026-09-20 UTC**, Korean live documentation (no immutable
 revision ID published; both pages displayed “Updated 5 months ago”):
 
 - [KRW minimum order value](https://docs.upbit.com/kr/docs/krw-market-info)
-- [Market-buy fill truncation FAQ](https://docs.upbit.com/kr/kr/docs/faq-order)
+- [Market-buy fill truncation FAQ](https://docs.upbit.com/kr/docs/faq-order)
 
 These are document-derived metadata, not rules returned by the market-list
 API. Consumers should respect the stated scope and recheck sources when
