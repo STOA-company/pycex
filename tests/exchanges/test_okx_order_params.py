@@ -72,7 +72,7 @@ async def test_reduce_only_is_sent_for_swap(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json=_ACK)
     ex = _swap()
     await ex.create_order("BTC/USDT:USDT", "sell", "market", 1, reduce_only=True)
-    assert _body(httpx_mock)["reduceOnly"] == "true"
+    assert _body(httpx_mock)["reduceOnly"] is True
     await ex.close()
 
 

@@ -79,3 +79,11 @@ class SymbolNotFoundError(PyCexError):
 
 class NotSupportedError(PyCexError):
     """The exchange or market type does not support this operation."""
+
+
+class HedgeModeNotSupportedError(ExchangeError):
+    """Hedge-mode accounts are not supported for order placement."""
+
+
+class UnsupportedOrderError(NotSupportedError, InvalidOrderError):
+    """Unsupported order option (also an InvalidOrderError for compatibility)."""

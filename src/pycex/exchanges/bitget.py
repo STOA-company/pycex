@@ -109,11 +109,14 @@ from pycex.constants import BITGET_BASE, BITGET_BROKER_ID, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
+    HedgeModeNotSupportedError,
     InsufficientBalanceError,
+    InvalidOrderError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
     SymbolNotFoundError,
+    UnsupportedOrderError,
 )
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
@@ -446,12 +449,32 @@ class Bitget(BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> Order:
+        if reduce_only and self.market_type != "linear":
+            raise UnsupportedOrderError("reduce_only requires a linear futures market")
         native = self.to_native(symbol)
         path = self._p("order")
         body: dict[str, Any]
         if self.market_type == "linear":
+            account_path = self._path(
+                "/api/v2/mix/account/account", self._mix_params({"symbol": native, "marginCoin": "USDT"})
+            )
+            async with self._rate_limiter.request("query"):
+                account = self._check(await self._http.get(account_path, headers=self._signed_get(account_path)))
+            mode = account[0].get("posMode") if account and isinstance(account[0], dict) else None
+            if mode == "hedge_mode":
+                raise HedgeModeNotSupportedError("Hedge-mode accounts are not supported", exchange=self.name)
+            if mode != "one_way_mode":
+                raise ExchangeError("Cannot determine account position mode", exchange=self.name)
             body = {
                 "symbol": native,
                 "productType": self._product_type,
@@ -476,6 +499,10 @@ class Bitget(BaseExchange):
                 body["force"] = "gtc"
                 if price is not None:
                     body["price"] = str(price)
+        if reduce_only:
+            body["reduceOnly"] = "YES"
+        if client_order_id is not None:
+            body["clientOid"] = client_order_id
         body_str = json.dumps(body)
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
@@ -483,6 +510,10 @@ class Bitget(BaseExchange):
         first = r[0] if r else {}
         return Order(
             id=first.get("orderId", ""),
+            client_order_id=first.get("clientOid") or client_order_id or None,
+            status="accepted"
+            if self.market_type == "linear" and (first.get("orderId") or first.get("clientOid"))
+            else "",
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
@@ -506,20 +537,25 @@ class Bitget(BaseExchange):
         first = r[0] if r else {}
         return Order(id=first.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
+        lookup = {"clientOid": client_order_id} if client_order_id else {"orderId": order_id}
         params: dict[str, Any]
         if self.market_type == "linear":
-            params = self._mix_params({"symbol": native, "orderId": order_id})
+            params = self._mix_params({"symbol": native, **lookup})
         else:
             # Bitget's spot order-info endpoint is keyed by orderId only — no symbol filter to convert.
-            params = {"orderId": order_id}
+            params = lookup
         path = self._path(self._p("orderInfo"), params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, headers=self._signed_get(path))
         r = self._check(data)
         if not r:
-            return Order(id=order_id, symbol=symbol, side="", type="", amount=0)
+            if self.market_type == "linear":
+                raise OrderNotFoundError("Order lookup returned no rows", exchange=self.name)
+            return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
         return _parse_order_mix(symbol, r[0]) if self.market_type == "linear" else _parse_order(symbol, r[0])
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
@@ -654,6 +690,9 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         price_tick=price_tick,
         amount_step=amount_step,
         min_notional=min_notional,
+        amount_unit="base" if market_type == "linear" else None,
+        contract_size=1.0 if market_type == "linear" else None,
+        min_amount=float(d["minTradeNum"]) if market_type == "linear" and d.get("minTradeNum") else None,
         active=active,
         raw=d,
     )
@@ -783,6 +822,8 @@ def _parse_order_mix(symbol: str, d: dict[str, Any]) -> Order:
         status = d.get("state", "")
     return Order(
         id=str(d.get("orderId", "")),
+        client_order_id=d.get("clientOid") or None,
+        average=(float(d["priceAvg"]) or None) if d.get("priceAvg") else None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("orderType", "").lower(),
@@ -807,6 +848,8 @@ _RATE_LIMIT_CODES = frozenset({"1001"})
 
 
 def _map_error(code: str, msg: str) -> PyCexError:
+    if code == "45109":
+        return HedgeModeNotSupportedError("Hedge-mode accounts are not supported", code=code, exchange="bitget")
     if code in _INSUFFICIENT_BALANCE_CODES:
         return InsufficientBalanceError(msg, code=code, exchange="bitget")
     if code in _AUTH_CODES:

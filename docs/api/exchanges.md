@@ -89,13 +89,9 @@ with Binance(api_key="KEY", secret="SECRET", market_type="linear") as ex:
 - `fetch_my_trades` **requires** `symbol` on Binance (both spot and linear) and
   raises `ValueError` if omitted — Binance's `myTrades`/`userTrades` endpoints
   have no all-symbols mode.
-- `create_order` never sends `positionSide`, i.e. it assumes the futures
-  account is in **one-way mode** (Binance's default). A **hedge-mode** account
-  requires `positionSide=LONG`/`SHORT` on every order; without it Binance
-  rejects the order with `ExchangeError` code `-4061` ("Order's position side
-  does not match user's setting."), which this adapter surfaces unchanged —
-  switch the account back to one-way mode, or open a hedge-mode issue if you
-  need `positionSide` support added.
+- `create_order` assumes one-way mode and maps Binance code `-4061` to
+  `HedgeModeNotSupportedError`. See the [futures order safety guide](../futures-order-safety.md)
+  for reduce-only, client ID lookup, normalized order results and sizing limits.
 - Linear account balance (`GET /fapi/v2/balance`) has no `locked` field; it is
   derived as `balance - availableBalance` (funds tied up in position
   margin/unrealized loss).
@@ -261,15 +257,12 @@ with OKX(api_key="KEY", secret="SECRET", passphrase="PASS", market_type="linear"
   `"spot"` instance (the shared `BaseExchange` default) — they only work with
   `market_type="linear"`.
 - **`sz` is in contracts, not base-asset quantity**, for SWAP instruments —
-  see `ctVal`/`ctValCcy` on the `Market` returned by `fetch_markets`. This
-  adapter does not convert amount<->contracts in this phase; callers pass
-  the contract count directly to `create_order`/`cancel_order` on SWAP
-  symbols.
-- `create_order` never sends `posSide`, i.e. it assumes the SWAP account is
-  in **one-way mode** (OKX's default). A **hedge-mode** account requires
-  `posSide="long"`/`"short"` on every order; without it OKX rejects the
-  order, surfaced as whatever `ExchangeError` it returns (the exact error
-  code for this case was not confirmed against docs in this pass).
+  `Market.contract_size` exposes `ctVal * ctMult` in base units.
+  `Market.amount_from_base` converts base quantity to contract count and rejects
+  below-minimum/off-step requests without rounding. `create_order` still accepts
+  contract count directly; conversion is caller-controlled.
+- `create_order` assumes one-way mode. The specific `51000 Parameter posSide error`
+  maps to `HedgeModeNotSupportedError`; other parameter errors keep their type.
 - **Inverse (coin-margined) perpetuals are out of scope** — only
   USDT-settled linear (`settle == quote`) is supported. `to_native` raises
   `SymbolNotFoundError` for a canonical symbol like `BTC/USD:BTC`, and
@@ -402,11 +395,9 @@ with Bitget(api_key="KEY", secret="SECRET", passphrase="PASS", market_type="line
 - `fetch_positions`/`fetch_funding_rate` raise `NotSupportedError` on a
   `"spot"` instance (the shared `BaseExchange` default) — they only work with
   `market_type="linear"`.
-- `create_order` always sends `marginMode="crossed"` and never sends
-  `tradeSide`, i.e. it assumes the account is in **one-way mode** (Bitget's
-  default). A **hedge-mode** account requires `tradeSide="Open"`/`"Close"` on
-  every order; without it Bitget rejects the order, surfaced as whatever
-  `ExchangeError` it returns.
+- `create_order` keeps `marginMode="crossed"` and checks `posMode` before every
+  linear order. Hedge mode raises `HedgeModeNotSupportedError` before submission;
+  an unknown mode also prevents submission. The check adds one signed account GET.
 - **Inverse (coin-margined) perpetuals are out of scope** — only
   USDT-settled linear (`settle == quote`) is supported. `to_native` raises
   `SymbolNotFoundError` for a canonical symbol like `BTC/USD:BTC`.

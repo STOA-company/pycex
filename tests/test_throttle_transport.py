@@ -65,6 +65,8 @@ async def test_adapter_order_overflow_waits_fifo_with_zero_429(
 
     async def server(request: httpx.Request) -> httpx.Response:
         nonlocal rejected
+        if request.url.path == "/api/v2/mix/account/account":
+            return httpx.Response(200, json={"code": "00000", "data": {"posMode": "one_way_mode"}})
         assert request.method == "POST"
         if sum(t > clock() - period for t in accepted) >= limit:
             rejected += 1
@@ -101,6 +103,8 @@ async def test_429_mapping_and_recovery_releases_admission(
 
     def server(request: httpx.Request) -> httpx.Response:
         nonlocal calls
+        if request.url.path == "/api/v2/mix/account/account":
+            return httpx.Response(200, json={"code": "00000", "data": {"posMode": "one_way_mode"}})
         calls += 1
         if calls == 1:
             return httpx.Response(429, json={"msg": "too many requests"})

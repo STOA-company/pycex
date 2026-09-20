@@ -20,6 +20,7 @@ from pytest_httpx import HTTPXMock
 from pycex.exceptions import (
     AuthenticationError,
     InsufficientBalanceError,
+    NotSupportedError,
     OrderNotFoundError,
     RateLimitError,
     SymbolNotFoundError,
@@ -371,6 +372,16 @@ async def test_create_order_sends_content_type_and_body(httpx_mock: HTTPXMock) -
     assert order.price == 50000.0
     assert order.side == "buy"
     assert order.type == "limit"
+    await ex.close()
+
+
+async def test_create_order_rejects_unsupported_futures_options(httpx_mock: HTTPXMock) -> None:
+    ex = Bybit(api_key="k", secret=SECRET)
+    with pytest.raises(NotSupportedError):
+        await ex.create_order("BTC/USDT", "buy", "market", 0.001, reduce_only=True)
+    with pytest.raises(NotSupportedError):
+        await ex.create_order("BTC/USDT", "buy", "market", 0.001, client_order_id="client-1")
+    assert httpx_mock.get_requests() == []
     await ex.close()
 
 

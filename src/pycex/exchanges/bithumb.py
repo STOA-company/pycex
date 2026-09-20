@@ -131,7 +131,15 @@ class Bithumb(KrwV1Mixin, BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> Order:
         """Place an order via ``POST /v2/orders``.
 
@@ -149,6 +157,8 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         market orders) rather than whatever Bithumb's response happens to
         contain — see ``raw`` for the actual response.
         """
+        if reduce_only or client_order_id is not None:
+            raise NotSupportedError("This adapter does not support the new futures order options")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -194,7 +204,9 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         order = _parse_order(symbol, _normalize_order_fields(data))
         return order.model_copy(update={"status": "cancel"})
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if client_order_id is not None or order_id is None:
+            raise NotSupportedError("This adapter requires an exchange order ID")
         params = {"uuid": order_id}
         async with self._rate_limiter.request("query"):
             data = self._check(await self._http.get("/v1/order", params=params, headers=self._headers(params)))
