@@ -217,10 +217,20 @@ class Bybit(BaseExchange):
         return [_parse_trade(symbol, t) for t in result.get("list", [])]
 
     async def fetch_markets(self) -> list[Market]:
-        params = {"category": self._category}
-        data = await self._http.get("/v5/market/instruments-info", params=params)
-        result = self._check(data)
-        markets = [m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None]
+        # Default page is 500; linear already exceeds that (live: 879 rows,
+        # 2026-09-20). ``limit=1000`` plus ``nextPageCursor`` returns the rest.
+        markets: list[Market] = []
+        cursor = ""
+        while True:
+            params: dict[str, Any] = {"category": self._category, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._http.get("/v5/market/instruments-info", params=params)
+            result = self._check(data)
+            markets.extend(m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None)
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                break
         self._markets = {m.native: m for m in markets}
         return markets
 
