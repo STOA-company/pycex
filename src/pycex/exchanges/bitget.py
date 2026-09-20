@@ -241,6 +241,7 @@ class Bitget(BaseExchange):
         self.market_type = market_type
         self.sandbox = self._resolve_sandbox(sandbox, None, demo)
         self._markets: dict[str, Market] = {}
+        self._spot_daily_granularity: dict[str, str] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         self._product_type = "SUSDT-FUTURES" if (market_type == "linear" and self.sandbox) else "USDT-FUTURES"
         broker_headers: dict[str, str] = {}
@@ -370,9 +371,10 @@ class Bitget(BaseExchange):
             candles = [_parse_candle(k) for k in result]
             candles.sort(key=lambda c: c.timestamp)
             return candles
+        gran = self._spot_daily_granularity.get(native) or _TIMEFRAME_MAP.get(timeframe, timeframe)
         params = {
             "symbol": native,
-            "granularity": _TIMEFRAME_MAP.get(timeframe, timeframe),
+            "granularity": gran,
             "limit": limit,
         }
         if since is not None:
@@ -388,6 +390,7 @@ class Bitget(BaseExchange):
                 data = await self._http.get(self._p("candles"), params=params)
         except ExchangeError as e:
             if params.get("granularity") == "1Dutc" and str(getattr(e, "code", "") or "") == "48001":
+                self._spot_daily_granularity[native] = "1day"
                 params["granularity"] = "1day"
                 async with self._rate_limiter.request("query"):
                     data = await self._http.get(self._p("candles"), params=params)
