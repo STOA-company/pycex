@@ -29,11 +29,8 @@ Doc verification (2026-08-30) — not a blanket "confirmed", itemized:
   unRealizedProfit, leverage, liquidationPrice, updateTime``) and
   ``GET /fapi/v2/balance`` fields (``asset, balance, availableBalance`` — a bare
   list, not ``{"balances":[...]}`` like spot's ``/api/v3/account``).
-- Not documented in either fetched page and not independently reconfirmed:
-  the ``-4061`` hedge-mode error code below is long-standing, widely-documented
-  Binance Futures API behavior, not a value pulled from a docs page in this
-  session — treat it as unverified-by-fetch if it ever needs to be relied on
-  precisely (e.g. matching on the numeric code programmatically).
+- Reconfirmed 2026-09-20: ``-4061`` (POSITION_SIDE_NOT_MATCH) in Binance's
+  official USD-M futures error-code reference. See docs/futures-order-safety.md.
 
 Error mapping (2026-08-30, live-fetched and confirmed against
 developers.binance.com/docs/binance-spot-api-docs/errors): ``-2010``
@@ -49,8 +46,7 @@ fallback.
 ``create_order`` never sends ``positionSide`` — this assumes the linear account
 is in one-way mode (Binance's default). A hedge-mode account requires
 ``positionSide=LONG``/``SHORT`` on every order; without it Binance rejects the
-order with ``ExchangeError`` code ``-4061`` ("Order's position side does not
-match user's setting."), which surfaces to the caller unchanged.
+order with code ``-4061``, mapped to ``HedgeModeNotSupportedError``.
 """
 
 from __future__ import annotations
@@ -70,11 +66,14 @@ from pycex.constants import (
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
+    HedgeModeNotSupportedError,
     InsufficientBalanceError,
+    InvalidOrderError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
     SymbolNotFoundError,
+    UnsupportedOrderError,
 )
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
@@ -280,8 +279,18 @@ class Binance(BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        reduce_only: bool = False,
+        client_order_id: str | None = None,
     ) -> Order:
+        if reduce_only and self.market_type != "linear":
+            raise UnsupportedOrderError("reduce_only requires a linear futures market")
         native = self.to_native(symbol)
         params: dict[str, Any] = {
             "symbol": native,
@@ -289,13 +298,24 @@ class Binance(BaseExchange):
             "type": order_type.upper(),
             "quantity": str(amount),
         }
+        if reduce_only:
+            params["reduceOnly"] = "true"
+        if client_order_id is not None:
+            params["newClientOrderId"] = client_order_id
         if price is not None:
             params["price"] = str(price)
             params["timeInForce"] = "GTC"
         async with self._rate_limiter.request("order", weight=1):
             params = self._signed_params(params)
             data = await self._http.post(self._p("order"), params=params, headers=self._auth_headers())
-        return _parse_order(symbol, data)
+        order = _parse_order(symbol, data)
+        if self.market_type == "linear":
+            order.client_order_id = order.client_order_id or client_order_id
+            if "origQty" not in data:
+                order.amount = amount
+            if not order.status and data.get("orderId"):
+                order.status = "accepted"
+        return order
 
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)
@@ -304,10 +324,13 @@ class Binance(BaseExchange):
             data = await self._http.delete(self._p("order"), params=params, headers=self._auth_headers())
         return _parse_order(symbol, data)
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
+        lookup = {"origClientOrderId": client_order_id} if client_order_id else {"orderId": order_id}
         async with self._rate_limiter.request("query", weight=1 if self.market_type == "linear" else 4):
-            params = self._signed_params({"symbol": native, "orderId": order_id})
+            params = self._signed_params({"symbol": native, **lookup})
             data = await self._http.get(self._p("order"), params=params, headers=self._auth_headers())
         return _parse_order(symbol, data)
 
@@ -426,6 +449,34 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         price_tick=price_tick,
         amount_step=amount_step,
         min_notional=min_notional,
+        market_amount_step=next(
+            (
+                float(f["stepSize"])
+                for f in d.get("filters", [])
+                if f.get("filterType") == "MARKET_LOT_SIZE" and f.get("stepSize")
+            ),
+            None,
+        )
+        if market_type == "linear"
+        else None,
+        market_min_amount=next(
+            (
+                float(f["minQty"])
+                for f in d.get("filters", [])
+                if f.get("filterType") == "MARKET_LOT_SIZE" and f.get("minQty")
+            ),
+            None,
+        )
+        if market_type == "linear"
+        else None,
+        amount_unit="base" if market_type == "linear" else None,
+        contract_size=1.0 if market_type == "linear" else None,
+        min_amount=next(
+            (float(f["minQty"]) for f in d.get("filters", []) if f.get("filterType") == "LOT_SIZE" and f.get("minQty")),
+            None,
+        )
+        if market_type == "linear"
+        else None,
         active=d.get("status") == "TRADING",
         raw=d,
     )
@@ -513,6 +564,8 @@ def _parse_my_trade(symbol: str, t: dict[str, Any]) -> MyTrade:
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     return Order(
         id=str(d.get("orderId", "")),
+        client_order_id=d.get("clientOrderId") or None,
+        average=(float(d["avgPrice"]) or None) if ":" in symbol and d.get("avgPrice") else None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("type", "").lower(),
@@ -535,6 +588,8 @@ _RATE_LIMIT_CODES = frozenset({"-1003"})
 
 
 def _map_error(code: str, msg: str) -> PyCexError:
+    if code == "-4061":
+        return HedgeModeNotSupportedError("Hedge-mode accounts are not supported", code=code, exchange="binance")
     if code in _INSUFFICIENT_BALANCE_CODES:
         return InsufficientBalanceError(msg, code=code, exchange="binance")
     if code in _AUTH_CODES:

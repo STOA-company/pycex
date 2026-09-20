@@ -586,12 +586,14 @@ async def test_fetch_my_trades_requires_symbol() -> None:
 
 
 async def test_create_order_linear_body_shape(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", json={"code": "00000", "data": {"posMode": "one_way_mode"}})
     httpx_mock.add_response(
-        json={"code": "00000", "msg": "success", "requestTime": 1, "data": {"orderId": "1", "clientOid": "c"}}
+        method="POST",
+        json={"code": "00000", "msg": "success", "requestTime": 1, "data": {"orderId": "1", "clientOid": "c"}},
     )
     ex = Bitget(api_key="k", secret=SECRET, passphrase="p", market_type="linear")
     order = await ex.create_order("BTC/USDT:USDT", "buy", "limit", 0.01, 50000.0)
-    req = httpx_mock.get_request()
+    req = httpx_mock.get_request(method="POST")
     assert req.url.path == "/api/v2/mix/order/place-order"
     body = json_lib.loads(req.content.decode())
     assert body["symbol"] == "BTCUSDT"
@@ -613,12 +615,14 @@ async def test_create_order_signature_matches_verbatim_wire_body(httpx_mock: HTT
     gets re-serialized separately by httpx -- otherwise every real order
     would fail Bitget's signature check. Recomputes independently from the
     real captured request rather than calling the adapter's own signer."""
+    httpx_mock.add_response(method="GET", json={"code": "00000", "data": {"posMode": "one_way_mode"}})
     httpx_mock.add_response(
-        json={"code": "00000", "msg": "success", "requestTime": 1, "data": {"orderId": "1", "clientOid": "c"}}
+        method="POST",
+        json={"code": "00000", "msg": "success", "requestTime": 1, "data": {"orderId": "1", "clientOid": "c"}},
     )
     ex = Bitget(api_key="k", secret=SECRET, passphrase="p", market_type="linear")
     await ex.create_order("BTC/USDT:USDT", "buy", "limit", 0.01, 50000.0)
-    req = httpx_mock.get_request()
+    req = httpx_mock.get_request(method="POST")
     assert req.headers["Content-Type"] == "application/json"
     _assert_valid_signature(req)
     await ex.close()

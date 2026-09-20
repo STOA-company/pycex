@@ -19,6 +19,7 @@ from pycex.constants import (
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
+    HedgeModeNotSupportedError,
     InsufficientBalanceError,
     InvalidOrderError,
     NetworkError,
@@ -28,6 +29,7 @@ from pycex.exceptions import (
     RateLimitError,
     SettlementPendingError,
     SymbolNotFoundError,
+    UnsupportedOrderError,
 )
 from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, Korbit, Upbit
 from pycex.factory import create_exchange
@@ -73,6 +75,8 @@ __all__ = [
     "PyCexError",
     "AuthenticationError",
     "ExchangeError",
+    "HedgeModeNotSupportedError",
+    "UnsupportedOrderError",
     "RateLimitError",
     "InsufficientBalanceError",
     "InvalidOrderError",

@@ -106,7 +106,8 @@ async def test_swap_reduce_only_close_body_matches_the_live_one() -> None:
     recorded = pair("swap_reduce_only_close_ok")["request"]["body"]
     ex = _adapter(["swap_reduce_only_close_ok"], market_type="linear", td_mode="cross")
     await ex.create_order("ETH/USDT:USDT", "buy", "market", 0.01, client_order_id=recorded["clOrdId"], reduce_only=True)
-    assert _body(ex) == recorded
+    # Preserve the recording; current official API declares a JSON boolean.
+    assert _body(ex) == {**recorded, "reduceOnly": True}
     await ex.close()
 
 

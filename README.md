@@ -146,7 +146,8 @@ with OKX(api_key="KEY", secret="SECRET", passphrase="PASS", market_type="linear"
 `fetch_positions`/`fetch_funding_rate` raise `NotSupportedError` on a `"spot"`
 instance and on every KRW exchange (Upbit/Bithumb/Korbit are spot-only). See
 `docs/api/exchanges.md` for per-venue quirks (contracts-vs-quantity on OKX,
-hedge-mode caveats, etc.).
+hedge-mode caveats, etc.). For common order options, client ID lookup and exact
+quantity conversion, see the [futures order safety guide](docs/futures-order-safety.md).
 
 ## Candles (OHLCV) and Pagination
 

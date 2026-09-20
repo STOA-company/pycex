@@ -36,12 +36,9 @@ Doc verification (2026-08-30):
   method bodies were not readable in this pass (same truncation issue on that
   file), so treat those three as fixture/cross-reference-verified rather than
   docs-verified line-by-line.
-- Not confirmed in this session: the exact error code OKX returns for a
-  hedge-mode ``posSide`` mismatch on ``create_order`` (this adapter never
-  sends ``posSide``, i.e. it assumes one-way mode; a hedge-mode account gets
-  back whatever ``ExchangeError`` OKX raises, surfaced unchanged — same
-  posture as the Binance adapter's ``-4061`` note, but here the code itself
-  is not even guessed at).
+- Reconfirmed 2026-09-20: OKX's official API FAQ links ``51000 Parameter
+  posSide error`` to position mode. Only that message/code combination maps
+  to ``HedgeModeNotSupportedError``; other 51000 errors remain unchanged.
 
 ``fetch_positions``/``fetch_funding_rate`` only work when ``market_type=
 "linear"``; on ``"spot"`` they fall through to the shared ``BaseExchange``
@@ -63,6 +60,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from decimal import Decimal
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -72,6 +70,7 @@ from pycex.constants import OKX_BASE, OKX_BROKER_ID
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
+    HedgeModeNotSupportedError,
     InvalidOrderError,
     NotSupportedError,
     OrderNotFoundError,
@@ -79,6 +78,7 @@ from pycex.exceptions import (
     RateLimitError,
     SettlementPendingError,
     SymbolNotFoundError,
+    UnsupportedOrderError,
 )
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
@@ -426,8 +426,9 @@ class OKX(BaseExchange):
     ) -> Order:
         """Place an order.
 
-        ``client_order_id`` is OKX's ``clOrdId`` — the venue-level idempotency
-        key. pycex sends what it is given and **never generates one**: whether
+        ``client_order_id`` is OKX's ``clOrdId`` — unique only among pending
+        orders, reusable after completion, and not an exactly-once guarantee.
+        pycex sends what it is given and **never generates one**: whether
         a retry reuses a key or mints a new one is the caller's policy, not the
         SDK's. OKX accepts 1-32 alphanumeric characters; anything else is
         rejected here, before the request goes out.
@@ -478,13 +479,13 @@ class OKX(BaseExchange):
             body["tgtCcy"] = "quote_ccy" if body["side"] == "buy" else "base_ccy"
         if reduce_only:
             if self.market_type != "linear":
-                raise InvalidOrderError(
+                raise UnsupportedOrderError(
                     "okx: reduce_only applies to SWAP (market_type='linear') only — "
                     "a spot balance has no position to reduce",
                     code="reduceOnly",
                     exchange="okx",
                 )
-            body["reduceOnly"] = "true"
+            body["reduceOnly"] = True
         algo = _attached_algo_orders(tp_px, sl_px)
         if algo is not None:
             body["attachAlgoOrds"] = [algo]
@@ -502,6 +503,7 @@ class OKX(BaseExchange):
         return Order(
             id=r.get("ordId", ""),
             client_order_id=r.get("clOrdId") or client_order_id or None,
+            status="accepted" if self.market_type == "linear" and r.get("ordId") else "",
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
@@ -528,19 +530,25 @@ class OKX(BaseExchange):
             raw=data,
         )
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
-        path = f"/api/v5/trade/order?instId={native}&ordId={order_id}"
+        lookup = {"clOrdId": _validated_client_order_id(client_order_id)} if client_order_id else {"ordId": order_id}
+        params = {"instId": native, **lookup}
+        path = "/api/v5/trade/order?" + urlencode(params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(
                 "/api/v5/trade/order",
-                params={"instId": native, "ordId": order_id},
+                params=params,
                 headers=self._auth_headers("GET", path),
             )
         result = self._check(data)
         if result:
             return _parse_order(symbol, result[0])
-        return Order(id=order_id, symbol=symbol, side="", type="", amount=0)
+        if self.market_type == "linear":
+            raise OrderNotFoundError("Order lookup returned no rows", exchange=self.name)
+        return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         params: dict[str, Any] = {}
@@ -664,6 +672,11 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         price_tick=float(tick_sz) if tick_sz not in (None, "") else None,
         amount_step=float(lot_sz) if lot_sz not in (None, "") else None,
         min_notional=None,
+        amount_unit="contract" if market_type == "linear" else None,
+        contract_size=float(Decimal(d["ctVal"]) * Decimal(d["ctMult"]))
+        if market_type == "linear" and d.get("ctVal") and d.get("ctMult") and d.get("ctValCcy") == native.split("-")[0]
+        else None,
+        min_amount=float(d["minSz"]) if market_type == "linear" and d.get("minSz") else None,
         active=d.get("state") == "live",
         raw=d,
     )
@@ -751,6 +764,7 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     return Order(
         id=d.get("ordId", ""),
         client_order_id=d.get("clOrdId") or None,
+        average=(float(d["avgPx"]) or None) if ":" in symbol and d.get("avgPx") else None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("ordType", "").lower(),
@@ -769,6 +783,8 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
 def _map_error(code: str, msg: str) -> PyCexError:
     """Map OKX's ``code``/``msg`` pair (present both on HTTP>=400 bodies and on
     HTTP 200 responses with ``code != "0"``) to a ``PyCexError``."""
+    if code == "51000" and "parameter posside error" in msg.lower():
+        return HedgeModeNotSupportedError("Hedge-mode accounts are not supported", code=code, exchange="okx")
     if code == "51008":
         # Not "you are broke" — "not settled yet". See SettlementPendingError.
         return SettlementPendingError(msg, code=code, exchange="okx")
@@ -833,7 +849,7 @@ def _validated_client_order_id(value: str) -> str:
 
     Sending a malformed key and reading the rejection back is not "validation":
     the order did not go out, the caller cannot tell that apart from a venue
-    outage, and an empty string silently turns idempotency **off**.
+    outage, and an empty string removes the caller's reconciliation key.
     """
     if not _CLIENT_ORDER_ID_RE.match(value):
         raise InvalidOrderError(
