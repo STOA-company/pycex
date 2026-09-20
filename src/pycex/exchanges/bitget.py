@@ -241,6 +241,7 @@ class Bitget(BaseExchange):
         self.market_type = market_type
         self.sandbox = self._resolve_sandbox(sandbox, None, demo)
         self._markets: dict[str, Market] = {}
+        self._spot_daily_granularity: dict[str, str] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         self._product_type = "SUSDT-FUTURES" if (market_type == "linear" and self.sandbox) else "USDT-FUTURES"
         broker_headers: dict[str, str] = {}
@@ -370,17 +371,31 @@ class Bitget(BaseExchange):
             candles = [_parse_candle(k) for k in result]
             candles.sort(key=lambda c: c.timestamp)
             return candles
+        gran = self._spot_daily_granularity.get(native) or _TIMEFRAME_MAP.get(timeframe, timeframe)
         params = {
             "symbol": native,
-            "granularity": _TIMEFRAME_MAP.get(timeframe, timeframe),
+            "granularity": gran,
             "limit": limit,
         }
         if since is not None:
             params["startTime"] = since
         if until is not None:
             params["endTime"] = until
-        async with self._rate_limiter.request("query"):
-            data = await self._http.get(self._p("candles"), params=params)
+        # Reality stock (rtoken) spot rejects UTC-suffixed daily bars
+        # (live 2026-09-20: RAAPLUSDT + 1Dutc → HTTP 400 code 48001
+        # "Parameter validation failed null"; 1day returns bars). Crypto
+        # spot still tries 1Dutc first so UTC midnight alignment is kept.
+        try:
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get(self._p("candles"), params=params)
+        except ExchangeError as e:
+            if params.get("granularity") == "1Dutc" and str(getattr(e, "code", "") or "") == "48001":
+                self._spot_daily_granularity[native] = "1day"
+                params["granularity"] = "1day"
+                async with self._rate_limiter.request("query"):
+                    data = await self._http.get(self._p("candles"), params=params)
+            else:
+                raise
         # Sorted for the same reason the mix branch above is: ascending is the
         # library-wide contract, and it must not depend on which market type
         # (or which of Bitget's two candle endpoints) served the page.

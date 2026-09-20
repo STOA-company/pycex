@@ -206,6 +206,56 @@ async def test_fetch_candles_page_spot_daily_uses_utc_suffixed_granularity(httpx
     await ex.close()
 
 
+async def test_fetch_candles_page_spot_rtoken_falls_back_from_utc_daily_to_1day(httpx_mock: HTTPXMock) -> None:
+    """Live-verified 2026-09-20: Bitget Reality stock (rtoken) spot pairs
+    (``areaSymbol=yes``, base ``rAAPL`` / native ``RAAPLUSDT``) reject
+    ``granularity=1Dutc`` with HTTP 400 ``code=48001``
+    ``Parameter validation failed null``. The same symbol returns bars with
+    ``granularity=1day``. Crypto spot must still try ``1Dutc`` first.
+    """
+    httpx_mock.add_response(
+        status_code=400,
+        json={"code": "48001", "msg": "Parameter validation failed null", "data": None},
+    )
+    httpx_mock.add_response(
+        json={
+            "code": "00000",
+            "msg": "success",
+            "data": [["1789920000000", "333.99", "335.12", "333.99", "335.1", "1.124", "375.992052"]],
+        }
+    )
+    ex = Bitget(market_type="spot")
+    candles = await ex._fetch_candles_page("RAAPLUSDT", "1d", since=None, until=None, limit=2)
+    reqs = httpx_mock.get_requests()
+    assert [r.url.params["granularity"] for r in reqs] == ["1Dutc", "1day"]
+    assert reqs[0].url.path == reqs[1].url.path == "/api/v2/spot/market/candles"
+    assert len(candles) == 1
+    assert candles[0].timestamp == 1789920000000
+    assert candles[0].open == 333.99
+    await ex.close()
+
+
+async def test_fetch_candles_page_spot_rtoken_remembers_1day_after_48001(httpx_mock: HTTPXMock) -> None:
+    """After 1Dutc is rejected once, later pages for that native must not
+    keep paying the 48001 round-trip."""
+    candle = {
+        "code": "00000",
+        "msg": "success",
+        "data": [["1789920000000", "333.99", "335.12", "333.99", "335.1", "1.124", "375.992052"]],
+    }
+    httpx_mock.add_response(
+        status_code=400,
+        json={"code": "48001", "msg": "Parameter validation failed null", "data": None},
+    )
+    httpx_mock.add_response(json=candle)
+    httpx_mock.add_response(json=candle)
+    ex = Bitget(market_type="spot")
+    await ex._fetch_candles_page("RAAPLUSDT", "1d", since=None, until=None, limit=2)
+    await ex._fetch_candles_page("RAAPLUSDT", "1d", since=None, until=1_789_920_000_000, limit=2)
+    assert [r.url.params["granularity"] for r in httpx_mock.get_requests()] == ["1Dutc", "1day", "1day"]
+    await ex.close()
+
+
 async def test_fetch_candles_page_linear_sends_product_type_granularity_and_range(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json=load_fixture("bitget", "candles_linear_1d"))
     ex = Bitget(market_type="linear")
