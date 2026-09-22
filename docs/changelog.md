@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-22
+
+### Added
+
+- `fetch_candles(..., closed_only=True)` keeps a bar only when
+  `timestamp + timeframe_ms <= now_ms`. `Candle.timestamp` is the bar open.
+- `Market.listed_at` records the venue listing time (OKX `listTime`, Binance
+  linear `onboardDate`, Bitget `launchTime`/`onlineTime`, Bybit `launchTime`)
+  or `None` when the venue does not publish one.
+- `fetch_candles_history` / `fetch_candles_history_sync` page from `since` to
+  `until` (or the last closed bar), honoring `CANDLE_VENUES` page limits and
+  backing off on `RateLimitError` at most five times.
+- `CANDLE_VENUES` is the code table of page limit, paging direction, open-time
+  basis, and supported timeframes. Anything else raises `NotSupportedError`.
+
 ## [0.2.0] - 2026-08-30
 
 ### Added

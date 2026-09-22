@@ -233,7 +233,7 @@ asyncio.run(main())
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `timestamp` | `int` | Candle open time (Unix ms) |
+| `timestamp` | `int` | Candle **open** time (Unix ms, UTC). Not the close time. |
 | `open` | `float` | Open price |
 | `high` | `float` | High price |
 | `low` | `float` | Low price |
@@ -335,6 +335,7 @@ with Binance() as ex:
 | `amount_step` | `float \| None` | Minimum amount increment |
 | `min_notional` | `float \| None` | Minimum order value in quote currency |
 | `active` | `bool` | Whether the market is currently tradable |
+| `listed_at` | `datetime \| None` | Venue listing time in UTC when the exchange publishes one (OKX `listTime`, Binance linear `onboardDate`, Bitget `launchTime`/`onlineTime`, Bybit `launchTime`). `None` when that field is absent. |
 | `raw` | `dict` | Original exchange response |
 | `public_rules` | `dict` | Document-derived exact values, units, scope and sources; empty when not supplied |
 

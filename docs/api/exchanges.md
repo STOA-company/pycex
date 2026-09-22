@@ -717,12 +717,22 @@ All exchanges implement these methods:
 ticker = await ex.fetch_ticker("BTC/USDT")
 ob = await ex.fetch_order_book("BTC/USDT", limit=20)
 candles = await ex.fetch_candles("BTC/USDT", "1h", limit=100)
+closed = await ex.fetch_candles("BTC/USDT", "1m", limit=5, closed_only=True)
+async for bar in ex.fetch_candles_history("BTC/USDT", "1m", since=1_700_000_000_000):
+    ...
 trades = await ex.fetch_trades("BTC/USDT", limit=100)
 
 # Sync
 ticker = ex.fetch_ticker_sync("BTC/USDT")
 ob = ex.fetch_order_book_sync("BTC/USDT", limit=20)
+history = ex.fetch_candles_history_sync("BTC/USDT", "1m", since=1_700_000_000_000)
 ```
+
+`closed_only=True` keeps a bar only when `timestamp + timeframe_ms <= now_ms`
+(`Candle.timestamp` is the bar open). `fetch_candles_history` walks
+`CANDLE_VENUES` page limits from `since` until an empty page. Omit `until` to
+stop at the last closed bar. `RateLimitError` waits for `Retry-After` when
+present, otherwise 1, 2, 4, 8, 16 seconds, at most five times.
 
 ### Account (auth required)
 
