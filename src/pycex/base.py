@@ -6,11 +6,14 @@ import asyncio
 import time
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pycex.constants import TIMEFRAME_MS
-from pycex.exceptions import NotSupportedError
+from pycex.exceptions import NotSupportedError, RateLimitError
+
+# One attempt plus five backoffs. Only fetch_candles_history retries.
+_HISTORY_ATTEMPTS = 6
 
 if TYPE_CHECKING:
     from pycex.http import HTTPClient
@@ -204,6 +207,58 @@ class BaseExchange(ABC):
             result = result[:limit]
         return self._drop_open_bars(result, timeframe) if closed_only else result
 
+    async def fetch_candles_history(
+        self,
+        symbol: str,
+        timeframe: str,
+        since: int,
+        until: int | None = None,
+    ) -> AsyncIterator[Candle]:
+        """Yield candles from ``since`` through ``until``, paging at the venue limit.
+
+        ``until=None`` stops at the last closed bar (``timestamp + timeframe_ms <= now_ms``).
+        An empty page ends the walk. ``RateLimitError`` waits for ``retry_after`` when
+        the exchange set it, otherwise 1, 2, 4, 8, 16 seconds, at most five times.
+        Any other error is raised on the first failure. No other method retries.
+        """
+        if timeframe not in self.supported_timeframes:
+            raise NotSupportedError(f"{self.name} does not support timeframe {timeframe}")
+        bound = until if until is not None else int(time.time() * 1000) - TIMEFRAME_MS[timeframe]
+        native = self.to_native(symbol)
+        out: dict[int, Candle] = {}
+        if self.candle_paging == "forward":
+            await self._walk_forward(out, native, timeframe, since=since, until=bound, limit=None, retry=True)
+        else:
+            await self._walk_backward(out, native, timeframe, since=since, until=bound, limit=None, retry=True)
+        for key in sorted(out):
+            yield out[key]
+
+    def fetch_candles_history_sync(
+        self,
+        symbol: str,
+        timeframe: str,
+        since: int,
+        until: int | None = None,
+    ) -> list[Candle]:
+        """Blocking twin of :meth:`fetch_candles_history`. Returns the full list."""
+
+        async def _collect() -> list[Candle]:
+            try:
+                return [c async for c in self.fetch_candles_history(symbol, timeframe, since, until)]
+            finally:
+                http = getattr(self, "_http", None)
+                if http is not None:
+                    await http.close()
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_collect())
+        raise RuntimeError(
+            "fetch_candles_history_sync called inside a running event loop; "
+            "async-iterate fetch_candles_history() instead"
+        )
+
     def _drop_open_bars(self, candles: list[Candle], timeframe: str) -> list[Candle]:
         now_ms = int(time.time() * 1000)
         span = TIMEFRAME_MS[timeframe]
@@ -217,6 +272,31 @@ class BaseExchange(ABC):
             if c.timestamp >= since and (until is None or c.timestamp <= until) and c.timestamp not in out
         ]
 
+    async def _load_candle_page(
+        self,
+        native: str,
+        timeframe: str,
+        *,
+        since: int | None,
+        until: int | None,
+        limit: int,
+        retry: bool,
+    ) -> list[Candle]:
+        if not retry:
+            return await self._fetch_candles_page(native, timeframe, since=since, until=until, limit=limit)
+        last: RateLimitError | None = None
+        for attempt in range(_HISTORY_ATTEMPTS):
+            try:
+                return await self._fetch_candles_page(native, timeframe, since=since, until=until, limit=limit)
+            except RateLimitError as err:
+                last = err
+                if attempt == _HISTORY_ATTEMPTS - 1:
+                    break
+                wait = err.retry_after if err.retry_after is not None else float(2**attempt)
+                await asyncio.sleep(wait)
+        assert last is not None
+        raise last
+
     async def _walk_forward(
         self,
         out: dict[int, Candle],
@@ -226,13 +306,14 @@ class BaseExchange(ABC):
         since: int,
         until: int | None,
         limit: int | None,
+        retry: bool = False,
     ) -> None:
         """Page a ``candle_paging = "forward"`` venue: the cursor is ``since`` and walks
         *up*, to one millisecond past the newest bar of the page just served."""
         cursor = since
         while True:
-            page = await self._fetch_candles_page(
-                native, timeframe, since=cursor, until=until, limit=self.candle_page_limit
+            page = await self._load_candle_page(
+                native, timeframe, since=cursor, until=until, limit=self.candle_page_limit, retry=retry
             )
             if not page:
                 return
@@ -259,6 +340,7 @@ class BaseExchange(ABC):
         since: int,
         until: int | None,
         limit: int | None,
+        retry: bool = False,
     ) -> None:
         """Page a ``candle_paging = "backward"`` venue: the cursor is ``until`` and walks
         *down* from the upper bound (or the venue's "now") to ``since``.
@@ -275,8 +357,8 @@ class BaseExchange(ABC):
             upper = bound if until is None else min(until, bound)
         cursor = upper
         while True:
-            page = await self._fetch_candles_page(
-                native, timeframe, since=None, until=cursor, limit=self.candle_page_limit
+            page = await self._load_candle_page(
+                native, timeframe, since=None, until=cursor, limit=self.candle_page_limit, retry=retry
             )
             if not page:
                 return
