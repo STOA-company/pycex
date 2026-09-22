@@ -34,6 +34,15 @@ def test_changelog_records_the_rate_limiter_lifetime_fix() -> None:
     assert "rate limiter is no longer reset" in CHANGELOG.lower()
 
 
+def test_unreleased_records_conservative_constant_removal() -> None:
+    """The shared 5/s names are a breaking removal, and they are gone from the package."""
+    unreleased = CHANGELOG.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    assert "Removed: `CONSERVATIVE_RATE_LIMIT`, `CONSERVATIVE_MAX_INFLIGHT` (breaking)" in unreleased
+    package = "\n".join(path.read_text() for path in (ROOT / "src").rglob("*.py"))
+    assert "CONSERVATIVE_RATE_LIMIT" not in package
+    assert "CONSERVATIVE_MAX_INFLIGHT" not in package
+
+
 # ── A2-4 우회 거부 ──
 
 

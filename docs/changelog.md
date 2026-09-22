@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed: `CONSERVATIVE_RATE_LIMIT`, `CONSERVATIVE_MAX_INFLIGHT` (breaking).
+  No call sites remain in quantus-mono or trader.
+
 ### Changed
 
 - Rate-limit defaults are 80% of each venue's published cap (floored).
