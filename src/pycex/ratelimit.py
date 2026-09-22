@@ -222,7 +222,13 @@ class ExchangeRateLimiter:
                 raise ValueError(f"unsupported Bybit market_type: {self.market_type!r}")
             self._concurrency = DEFAULT_MAX_INFLIGHT
         elif self.exchange == "okx":
-            add_split(OKX_QUERY_RATE_LIMIT, OKX_ORDER_RATE_LIMIT)
+            # Order period is 1s and query period is 2s, so this is not add_split.
+            # The shared window stays on the query budget: it matches the query
+            # class, and 5 orders/s fits inside 16/2s.
+            add("query", OKX_QUERY_RATE_LIMIT)
+            add("order", OKX_ORDER_RATE_LIMIT)
+            add("total", OKX_QUERY_RATE_LIMIT)
+            self._concurrency = DEFAULT_MAX_INFLIGHT
         elif self.exchange == "bitget":
             add_split(BITGET_PUBLIC_RATE_LIMIT, BITGET_ORDER_RATE_LIMIT)
         elif self.exchange == "bithumb":

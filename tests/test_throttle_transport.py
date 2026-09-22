@@ -26,7 +26,7 @@ CASES = [
     (Bithumb, "spot", 8, 1),
     (Korbit, "spot", 24, 1),
     (Bitget, "linear", 5, 1),
-    (OKX, "linear", 48, 2),
+    (OKX, "linear", 5, 1),
 ]
 
 

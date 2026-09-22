@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Rate-limit defaults are 80% of each venue's published cap (floored).
-  OKX, Bitget, Bithumb, and Korbit no longer share the 5/s, 1-in-flight
-  bucket. Confirmed venues allow 4 in-flight calls. Bybit uses the same
+  OKX orders stay at the previous 5/s cap. Bitget orders stay at 5/s.
+  Confirmed venues allow 4 in-flight calls. Bybit uses the same
   pre-flight limiter. `fetch_candles_history` 429 backoff is unchanged.
   The package version stays 0.4.0 until review picks the next number.
 

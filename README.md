@@ -262,7 +262,7 @@ not publish one. Page limits and timeframes live in `CANDLE_VENUES`.
 
 ## Rate limits
 
-어댑터 기본값은 거래소 공시 한도의 80%를 정수로 내린 값입니다. 공시를 확인하지 못한 주문 버킷만 이전 값(초당 5회)을 유지합니다. `fetch_candles_history`의 429 백오프(1, 2, 4, 8, 16초, 최대 5회)는 바꾸지 않았습니다. 빈 concurrency 칸은 쿼리 동시성 상한을 따로 두지 않는다는 뜻입니다.
+어댑터 기본값은 거래소 공시 한도의 80%를 정수로 내린 값입니다. OKX 주문과, 공시를 확인하지 못한 주문 버킷은 이전 값(초당 5회)을 유지합니다. `fetch_candles_history`의 429 백오프(1, 2, 4, 8, 16초, 최대 5회)는 바꾸지 않았습니다. 빈 concurrency 칸은 쿼리 동시성 상한을 따로 두지 않는다는 뜻입니다.
 
 OKX 최근 캔들(`/market/candles`, 공시 40/2s)은 가중치 0.5, 히스토리 캔들(공시 20/2s)은 가중치 1입니다. 공유 query 버킷 16/2s에서 각각 32/2s, 16/2s가 되어 둘 다 공시의 80%입니다.
 
@@ -280,7 +280,7 @@ OKX 최근 캔들(`/market/candles`, 공시 40/2s)은 가중치 0.5, 히스토�
 | bybit | spot | private | 40 | 1 | 4 |
 | bybit | linear | private | 40 | 1 | 4 |
 | okx | spot | query | 16 | 2 | 4 |
-| okx | spot | order | 48 | 2 | 4 |
+| okx | spot | order | 5 | 1 | 4 |
 | bitget | spot | query | 16 | 1 | 4 |
 | bitget | spot | order | 5 | 1 | 4 |
 | upbit | spot | query | 24 | 1 | |

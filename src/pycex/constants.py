@@ -39,11 +39,12 @@ BYBIT_SPOT_ORDER_RATE_LIMIT = (16, 1.0)
 BYBIT_LINEAR_ORDER_RATE_LIMIT = (8, 1.0)
 BYBIT_PRIVATE_QUERY_RATE_LIMIT = (40, 1.0)
 
-# OKX candles 40/2s, history-candles and ticker 20/2s, place-order 60/2s
-# per instrument. Query bucket is the 20/2s class; recent candles use weight 0.5.
+# Query bucket is 16/2s. Recent candles use weight 0.5; history candles use 1.
+# The order bucket stays at the previous (5, 1.0). Raising it is a separate
+# change: OKX is a live-account venue.
 # https://www.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks
 OKX_QUERY_RATE_LIMIT = (16, 2.0)
-OKX_ORDER_RATE_LIMIT = (48, 2.0)
+OKX_ORDER_RATE_LIMIT = (5, 1.0)
 OKX_RECENT_CANDLE_WEIGHT = 0.5
 OKX_HISTORY_CANDLE_WEIGHT = 1.0
 
