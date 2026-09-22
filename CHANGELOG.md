@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed: `CONSERVATIVE_RATE_LIMIT`, `CONSERVATIVE_MAX_INFLIGHT` (breaking).
+  No call sites remain in quantus-mono or trader.
+
+### Changed
+
+- Rate-limit defaults are 80% of each venue's published cap (floored).
+  OKX orders stay at the previous 5/s cap. Bitget orders stay at 5/s.
+  Confirmed venues allow 4 in-flight calls. Bybit uses the same
+  pre-flight limiter. `fetch_candles_history` 429 backoff is unchanged.
+  The package version stays 0.4.0 until review picks the next number.
+
 ## [0.4.0] - 2026-09-22
 
 ### Added

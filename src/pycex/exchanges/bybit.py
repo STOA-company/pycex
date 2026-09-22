@@ -65,6 +65,7 @@ from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
 from pycex.models.ticker import Ticker
 from pycex.models.trade import Trade
+from pycex.ratelimit import ExchangeRateLimiter
 from pycex.symbols import MarketType, parse_symbol
 from pycex.symbols import linear as make_linear_symbol
 from pycex.symbols import spot as make_spot_symbol
@@ -108,12 +109,14 @@ class Bybit(BaseExchange):
         self.sandbox = self._resolve_sandbox(sandbox, testnet, None)
         self._category = category if category is not None else ("linear" if market_type == "linear" else "spot")
         self._markets: dict[str, Market] = {}
+        self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         base = BYBIT_TESTNET if self.sandbox else BYBIT_BASE
         broker_headers: dict[str, str] = {}
         if BYBIT_REFERRAL_CODE:
             broker_headers["Referer"] = BYBIT_REFERRAL_CODE
+        # ExchangeRateLimiter is the sole admission gate.
         self._http = HTTPClient(
-            base, timeout=timeout, rate=10.0, default_headers=broker_headers, error_mapper=_error_mapper
+            base, timeout=timeout, rate=float("inf"), default_headers=broker_headers, error_mapper=_error_mapper
         )
 
     def to_native(self, symbol: str) -> str:
@@ -182,14 +185,16 @@ class Bybit(BaseExchange):
     async def fetch_ticker(self, symbol: str) -> Ticker:
         native = self.to_native(symbol)
         params = {"category": self._category, "symbol": native}
-        data = await self._http.get("/v5/market/tickers", params=params)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get("/v5/market/tickers", params=params)
         result = self._check(data)
         return _parse_ticker(symbol, result["list"][0])
 
     async def fetch_order_book(self, symbol: str, *, limit: int = 20) -> OrderBook:
         native = self.to_native(symbol)
         params = {"category": self._category, "symbol": native, "limit": limit}
-        data = await self._http.get("/v5/market/orderbook", params=params)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get("/v5/market/orderbook", params=params)
         result = self._check(data)
         return _parse_order_book(symbol, result)
 
@@ -206,7 +211,8 @@ class Bybit(BaseExchange):
             params["start"] = since
         if until is not None:
             params["end"] = until
-        data = await self._http.get("/v5/market/kline", params=params)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get("/v5/market/kline", params=params)
         result = self._check(data)
         # Bybit serves kline newest-first; the unified contract is ascending.
         return sorted((_parse_candle(k) for k in result.get("list", [])), key=lambda c: c.timestamp)
@@ -214,13 +220,15 @@ class Bybit(BaseExchange):
     async def fetch_trades(self, symbol: str, *, limit: int = 100) -> list[Trade]:
         native = self.to_native(symbol)
         params = {"category": self._category, "symbol": native, "limit": limit}
-        data = await self._http.get("/v5/market/recent-trade", params=params)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get("/v5/market/recent-trade", params=params)
         result = self._check(data)
         return [_parse_trade(symbol, t) for t in result.get("list", [])]
 
     async def fetch_markets(self) -> list[Market]:
         params = {"category": self._category}
-        data = await self._http.get("/v5/market/instruments-info", params=params)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get("/v5/market/instruments-info", params=params)
         result = self._check(data)
         markets = [m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None]
         self._markets = {m.native: m for m in markets}
@@ -229,8 +237,9 @@ class Bybit(BaseExchange):
     # ── Account ──
 
     async def fetch_balance(self) -> Balance:
-        full_path, headers = self._signed_get_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
-        data = await self._http.get(full_path, headers=headers)
+        async with self._rate_limiter.request("query", group="private"):
+            full_path, headers = self._signed_get_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+            data = await self._http.get(full_path, headers=headers)
         result = self._check(data)
         return _parse_balance(result, data)
 
@@ -250,8 +259,11 @@ class Bybit(BaseExchange):
         if price is not None:
             body["price"] = str(price)
             body["timeInForce"] = "GTC"
-        body_str = json.dumps(body)
-        data = await self._http.post_raw("/v5/order/create", body=body_str, headers=self._auth_post_headers(body_str))
+        async with self._rate_limiter.request("order"):
+            body_str = json.dumps(body)
+            data = await self._http.post_raw(
+                "/v5/order/create", body=body_str, headers=self._auth_post_headers(body_str)
+            )
         result = self._check(data)
         return Order(
             id=result.get("orderId", ""),
@@ -266,16 +278,20 @@ class Bybit(BaseExchange):
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)
         body = {"category": self._category, "symbol": native, "orderId": order_id}
-        body_str = json.dumps(body)
-        data = await self._http.post_raw("/v5/order/cancel", body=body_str, headers=self._auth_post_headers(body_str))
+        async with self._rate_limiter.request("order"):
+            body_str = json.dumps(body)
+            data = await self._http.post_raw(
+                "/v5/order/cancel", body=body_str, headers=self._auth_post_headers(body_str)
+            )
         result = self._check(data)
         return Order(id=result.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
     async def fetch_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)
         params = {"category": self._category, "symbol": native, "orderId": order_id}
-        full_path, headers = self._signed_get_request("/v5/order/realtime", params)
-        data = await self._http.get(full_path, headers=headers)
+        async with self._rate_limiter.request("query", group="private"):
+            full_path, headers = self._signed_get_request("/v5/order/realtime", params)
+            data = await self._http.get(full_path, headers=headers)
         result = self._check(data)
         if result.get("list"):
             return _parse_order(symbol, result["list"][0])
@@ -285,8 +301,9 @@ class Bybit(BaseExchange):
         params: dict[str, Any] = {"category": self._category}
         if symbol:
             params["symbol"] = self.to_native(symbol)
-        full_path, headers = self._signed_get_request("/v5/order/realtime", params)
-        data = await self._http.get(full_path, headers=headers)
+        async with self._rate_limiter.request("query", group="private"):
+            full_path, headers = self._signed_get_request("/v5/order/realtime", params)
+            data = await self._http.get(full_path, headers=headers)
         result = self._check(data)
         return [_parse_order(self.from_native(o.get("symbol", "")), o) for o in result.get("list", [])]
 
@@ -298,8 +315,9 @@ class Bybit(BaseExchange):
             params["symbol"] = self.to_native(symbol)
         if limit is not None:
             params["limit"] = limit
-        full_path, headers = self._signed_get_request("/v5/execution/list", params)
-        data = await self._http.get(full_path, headers=headers)
+        async with self._rate_limiter.request("query", group="private"):
+            full_path, headers = self._signed_get_request("/v5/execution/list", params)
+            data = await self._http.get(full_path, headers=headers)
         result = self._check(data)
         trades = [
             _parse_my_trade(symbol if symbol is not None else self.from_native(str(t.get("symbol", ""))), t)

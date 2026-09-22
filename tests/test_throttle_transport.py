@@ -20,11 +20,11 @@ from pycex.ratelimit import ExchangeRateLimiter
 from tests.test_exchange_rate_limiter import FakeClock
 
 CASES = [
-    (Upbit, "spot", 8, 1),
-    (Binance, "spot", 100, 10),
-    (Binance, "linear", 300, 10),
-    (Bithumb, "spot", 5, 1),
-    (Korbit, "spot", 5, 1),
+    (Upbit, "spot", 9, 1),
+    (Binance, "spot", 80, 10),
+    (Binance, "linear", 240, 10),
+    (Bithumb, "spot", 8, 1),
+    (Korbit, "spot", 24, 1),
     (Bitget, "linear", 5, 1),
     (OKX, "linear", 5, 1),
 ]
@@ -132,7 +132,7 @@ async def test_bitget_1001_mapping_is_preserved() -> None:
         await ex.close()
 
 
-@pytest.mark.parametrize("market_type,weight,budget", [("spot", 250, 6000), ("linear", 20, 2400)])
+@pytest.mark.parametrize("market_type,weight,budget", [("spot", 250, 4800), ("linear", 20, 1920)])
 async def test_binance_depth_weight_exhaustion_waits_before_http(market_type: str, weight: int, budget: int) -> None:
     ex = Binance(market_type=market_type)
     clock = FakeClock()
@@ -175,7 +175,7 @@ async def test_binance_linear_all_open_orders_charges_forty_weight() -> None:
     clock = FakeClock()
     ex = Binance(api_key="test", secret="test", market_type="linear")
     ex._rate_limiter = ExchangeRateLimiter("binance", "linear", clock=clock, sleep=clock.sleep)
-    async with ex._rate_limiter.request("query", weight=2361):
+    async with ex._rate_limiter.request("query", weight=1881):
         pass
     ex._http.set_transport_factory(lambda: httpx.MockTransport(lambda request: httpx.Response(200, json=[])))
     try:

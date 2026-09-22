@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from pycex.constants import OKX_ORDER_RATE_LIMIT
 from pycex.ratelimit import ExchangeRateLimiter, TokenBucket
 
 
@@ -54,14 +55,14 @@ async def test_upbit_order_and_query_budgets_are_separate() -> None:
     limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
     observed: list[float] = []
 
-    for _ in range(30):
+    for _ in range(24):
         await _request(limiter, "query", observed, clock)
-    for _ in range(8):
+    for _ in range(9):
         await _request(limiter, "order", observed, clock)
 
     assert clock.sleeps == []
     await _request(limiter, "order", observed, clock)
-    assert clock.sleeps, "the ninth Upbit order must wait instead of producing a 429"
+    assert clock.sleeps, "the tenth Upbit order must wait instead of producing a 429"
 
 
 async def test_binance_spot_weight_and_order_budgets_are_separate() -> None:
@@ -70,16 +71,16 @@ async def test_binance_spot_weight_and_order_budgets_are_separate() -> None:
     observed: list[float] = []
 
     # A weight charge must not consume the separate order-count allowance.
-    async with limiter.request("query", weight=6000):
+    async with limiter.request("query", weight=4800):
         observed.append(clock())
-    for _ in range(100):
+    for _ in range(80):
         async with limiter.request("order", weight=0):
             observed.append(clock())
     assert clock.sleeps == []
 
     async with limiter.request("order", weight=0):
         observed.append(clock())
-    assert clock.sleeps, "the 101st Binance spot order must wait"
+    assert clock.sleeps, "the 81st Binance spot order must wait"
 
 
 async def test_orders_are_fifo_when_they_wait() -> None:
@@ -87,7 +88,7 @@ async def test_orders_are_fifo_when_they_wait() -> None:
     limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
     seen: list[str] = []
 
-    for _ in range(8):
+    for _ in range(9):
         async with limiter.request("order"):
             pass
 
@@ -109,7 +110,7 @@ def test_budget_survives_sync_style_event_loop_rebuilds() -> None:
     limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
 
     async def exhaust_budget() -> None:
-        for _ in range(8):
+        for _ in range(9):
             async with limiter.request("order"):
                 pass
 
@@ -123,7 +124,7 @@ def test_budget_survives_sync_style_event_loop_rebuilds() -> None:
     assert clock.sleeps, "새 event loop가 주문 버킷을 가득 찬 상태로 재생성했다"
 
 
-async def test_conservative_venues_serialize_inflight_requests() -> None:
+async def test_okx_queries_are_not_single_flight() -> None:
     limiter = ExchangeRateLimiter("okx")
     first_entered = asyncio.Event()
     release = asyncio.Event()
@@ -142,10 +143,9 @@ async def test_conservative_venues_serialize_inflight_requests() -> None:
     await first_entered.wait()
     second_task = asyncio.create_task(second())
     await asyncio.sleep(0)
-    assert not second_entered.is_set()
+    assert second_entered.is_set()
     release.set()
     await asyncio.gather(first_task, second_task)
-    assert second_entered.is_set()
 
 
 async def test_preflight_sequence_waits_and_never_reaches_a_429_server() -> None:
@@ -158,8 +158,8 @@ async def test_preflight_sequence_waits_and_never_reaches_a_429_server() -> None
     async def server_request() -> None:
         nonlocal rejected
         async with limiter.request("order"):
-            # The venue's rolling one-second order window is the external 429 gate.
-            if sum(t > clock() - 1 for t in accepted) >= 8:
+            # Published Upbit order-create cap is 12/s. The client stays at 9/s.
+            if sum(t > clock() - 1 for t in accepted) >= 12:
                 rejected += 1
                 raise RuntimeError("429")
             accepted.append(clock())
@@ -172,10 +172,11 @@ async def test_preflight_sequence_waits_and_never_reaches_a_429_server() -> None
 
 
 @pytest.mark.parametrize("group", ["ticker", "orderbook", "candle", "trade", "market"])
-async def test_upbit_public_groups_enforce_ten_each(group: str) -> None:
+async def test_upbit_quotation_groups_enforce_eight_each(group: str) -> None:
+    """Each quotation group is 80% of the published 10/s IP cap, separate from default."""
     clock = FakeClock()
     limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
-    for _ in range(10):
+    for _ in range(8):
         async with limiter.request("query", group=group):
             pass
     other = "market" if group != "market" else "ticker"
@@ -215,7 +216,7 @@ async def test_cancelled_waiter_does_not_block_following_order() -> None:
         await clock.sleep(delay)
 
     limiter = ExchangeRateLimiter("okx", clock=clock, sleep=controlled_sleep)
-    for _ in range(5):
+    for _ in range(OKX_ORDER_RATE_LIMIT[0]):
         async with limiter.request("order"):
             pass
 
@@ -236,7 +237,7 @@ async def test_cancelled_waiter_does_not_block_following_order() -> None:
 async def test_binance_order_also_waits_for_shared_weight() -> None:
     clock = FakeClock()
     limiter = ExchangeRateLimiter("binance", clock=clock, sleep=clock.sleep)
-    async with limiter.request("query", weight=6000):
+    async with limiter.request("query", weight=4800):
         pass
     async with limiter.request("order", weight=1):
         assert clock.now >= 60

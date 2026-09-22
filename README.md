@@ -260,6 +260,10 @@ not publish one. Page limits and timeframes live in `CANDLE_VENUES`.
 올립니다 — 두 거래소 모두 알 수 없는 마켓 코드에 `error.name` 을 **정수** 404
 로 돌려주므로 `SymbolNotFoundError` 가 됩니다.
 
+## Rate limits
+
+어댑터 기본값, 공시 출처, 확인하지 못한 행은 [docs/rate-limits.md](docs/rate-limits.md)에 있습니다. 채택 값은 확인된 공시 한도의 80%를 정수로 내린 값 이하입니다. `fetch_candles_history`의 429 백오프(1, 2, 4, 8, 16초, 최대 5회)는 바꾸지 않았습니다.
+
 ## Supported Exchanges
 
 | Exchange | spot | linear | sandbox | markets | candles+pagination | orders | balance | my_trades | positions | funding |
