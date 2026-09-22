@@ -18,7 +18,7 @@ from typing import Any
 
 from pycex.auth import upbit_headers
 from pycex.base import BaseExchange
-from pycex.constants import UPBIT_BASE
+from pycex.constants import CANDLE_VENUES, UPBIT_BASE
 from pycex.exceptions import InvalidOrderError, NotSupportedError, PyCexError
 from pycex.exchanges._krw_v1 import KrwV1Mixin, _parse_balance, _parse_iso_to_ms, _parse_order, map_krw_error
 from pycex.exchanges._krw_v1 import _parse_candle as _parse_candle
@@ -44,14 +44,14 @@ class Upbit(KrwV1Mixin, BaseExchange):
     """Upbit spot exchange — no sandbox, spot only."""
 
     name = "upbit"
-    candle_page_limit = 200
+    candle_page_limit = CANDLE_VENUES["upbit"].page_limit
     # `to` is the only candle cursor this API has: a page is always the newest
     # `count` bars at or before it. Live probe 2026-08-30, 1d bars, since = now-400d,
     # limit 200 -> the API served the newest slice, not the oldest.
-    candle_paging = "backward"
+    candle_paging = CANDLE_VENUES["upbit"].paging
     _auth_error_names = _AUTH_NAMES
     _rate_limit_error_names = _RATE_LIMIT_NAMES
-    supported_timeframes = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+    supported_timeframes = CANDLE_VENUES["upbit"].timeframes
 
     def __init__(
         self,

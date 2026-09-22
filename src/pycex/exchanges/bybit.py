@@ -46,7 +46,7 @@ from urllib.parse import urlencode
 
 from pycex.auth import bybit_headers
 from pycex.base import BaseExchange
-from pycex.constants import BYBIT_BASE, BYBIT_REFERRAL_CODE, BYBIT_TESTNET, QUOTE_SUFFIXES
+from pycex.constants import BYBIT_BASE, BYBIT_REFERRAL_CODE, BYBIT_TESTNET, CANDLE_VENUES, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
@@ -82,12 +82,14 @@ _TIMEFRAME_MAP = {
 
 class Bybit(BaseExchange):
     name = "bybit"
+    candle_page_limit = CANDLE_VENUES["bybit"].page_limit
+    supported_timeframes = CANDLE_VENUES["bybit"].timeframes
     # 🚨 Direction depends on whether `end` is sent. With `start` alone the page is the
     # OLDEST `limit` bars from it; with `start`+`end` (what a range walk sends) Bybit
     # serves the NEWEST `limit` bars inside the window instead, so a `since` cursor
     # never advances past the first page (live probe 2026-08-30: 1h bars over 15 days
     # -> 200 of 360, forward). `end` is the cursor that actually walks the history.
-    candle_paging = "backward"
+    candle_paging = CANDLE_VENUES["bybit"].paging
 
     def __init__(
         self,

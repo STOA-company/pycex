@@ -185,15 +185,15 @@ with Bybit() as ex:
 페이징합니다. 페이징 방향은 거래소마다 다르고, **문서가 아니라 실측으로**
 정했습니다 (2026-08-30 공개 엔드포인트 프로브):
 
-| Exchange | 1페이지 상한 | 페이징 방향 | 커서 파라미터 |
-|----------|:---:|:---:|---|
-| Binance (spot·linear) | 200 | forward | `startTime` — 가장 **오래된** 구간부터 |
-| Bybit (spot·linear) | 200 | backward | `end` |
-| OKX (spot·linear) | 100 | backward | `after` |
-| Bitget (spot·linear) | 200 | backward | `endTime` |
-| Upbit | 200 | backward | `to` |
-| Bithumb | 200 | backward | `to` |
-| Korbit | 200 | backward | `end` |
+| Exchange | 1페이지 상한 | 페이징 방향 | 봉 시각 | timeframe | 커서 파라미터 |
+|----------|:---:|:---:|:---:|---|---|
+| Binance (spot·linear) | 200 | forward | open | 1m 5m 15m 1h 4h 1d | `startTime` — 가장 **오래된** 구간부터 |
+| Bybit (spot·linear) | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `end` |
+| OKX (spot·linear) | 100 | backward | open | 1m 5m 15m 1h 4h 1d | `after` |
+| Bitget (spot·linear) | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `endTime` |
+| Upbit | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `to` |
+| Bithumb | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `to` |
+| Korbit | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `end` |
 
 - **backward** = 그 거래소의 캔들 엔드포인트는 `since` 를 시작점으로 쓰지 않고
   `until`(없으면 "지금") 기준으로 **가장 최근** 봉부터 되돌려줍니다. 그래서

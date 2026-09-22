@@ -42,7 +42,7 @@ from typing import Any
 
 from pycex.auth import bithumb_headers
 from pycex.base import BaseExchange
-from pycex.constants import BITHUMB_BASE
+from pycex.constants import BITHUMB_BASE, CANDLE_VENUES
 from pycex.exceptions import InvalidOrderError, NotSupportedError, PyCexError
 from pycex.exchanges._krw_v1 import KrwV1Mixin, _parse_balance, _parse_iso_to_ms, _parse_order, map_krw_error
 from pycex.exchanges._krw_v1 import _parse_candle as _parse_candle
@@ -77,11 +77,11 @@ class Bithumb(KrwV1Mixin, BaseExchange):
     """
 
     name = "bithumb"
-    candle_page_limit = 200
+    candle_page_limit = CANDLE_VENUES["bithumb"].page_limit
     # Same `to`-only cursor as Upbit (and the same naive-KST caveat — see `_format_to`).
-    candle_paging = "backward"
+    candle_paging = CANDLE_VENUES["bithumb"].paging
     _auth_error_names = _AUTH_NAMES
-    supported_timeframes = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+    supported_timeframes = CANDLE_VENUES["bithumb"].timeframes
 
     def __init__(
         self,

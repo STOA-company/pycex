@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal, NamedTuple
+
 # ── Binance ──
 BINANCE_BASE = "https://api.binance.com"
 BINANCE_TESTNET = "https://testnet.binance.vision"
@@ -64,6 +66,29 @@ TIMEFRAME_MS: dict[str, int] = {
     "1h": 3_600_000,
     "4h": 14_400_000,
     "1d": 86_400_000,
+}
+
+# Page limit, paging direction, and bar-open contract. Adapters read this table;
+# README «Candles (OHLCV) and Pagination» repeats it. Every venue's candle
+# timestamp is the bar open (UTC epoch ms), already normalized in the parser.
+_CANDLE_TIMEFRAMES = frozenset(TIMEFRAME_MS)
+
+
+class CandleVenue(NamedTuple):
+    page_limit: int
+    paging: Literal["forward", "backward"]
+    bar_time: str
+    timeframes: frozenset[str]
+
+
+CANDLE_VENUES: dict[str, CandleVenue] = {
+    "binance": CandleVenue(200, "forward", "open", _CANDLE_TIMEFRAMES),
+    "bybit": CandleVenue(200, "backward", "open", _CANDLE_TIMEFRAMES),
+    "okx": CandleVenue(100, "backward", "open", _CANDLE_TIMEFRAMES),
+    "bitget": CandleVenue(200, "backward", "open", _CANDLE_TIMEFRAMES),
+    "upbit": CandleVenue(200, "backward", "open", _CANDLE_TIMEFRAMES),
+    "bithumb": CandleVenue(200, "backward", "open", _CANDLE_TIMEFRAMES),
+    "korbit": CandleVenue(200, "backward", "open", _CANDLE_TIMEFRAMES),
 }
 
 # ── Sides ──

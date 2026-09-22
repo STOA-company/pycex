@@ -65,6 +65,7 @@ from pycex.constants import (
     BINANCE_FAPI,
     BINANCE_FAPI_TESTNET,
     BINANCE_TESTNET,
+    CANDLE_VENUES,
     QUOTE_SUFFIXES,
 )
 from pycex.exceptions import (
@@ -135,7 +136,9 @@ _PATHS: dict[str, dict[str, str]] = {
 class Binance(BaseExchange):
     name = "binance"
     # `startTime` serves the oldest `limit` bars from it (live probe 2026-08-30).
-    candle_paging = "forward"
+    candle_page_limit = CANDLE_VENUES["binance"].page_limit
+    candle_paging = CANDLE_VENUES["binance"].paging
+    supported_timeframes = CANDLE_VENUES["binance"].timeframes
 
     def __init__(
         self,
