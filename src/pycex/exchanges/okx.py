@@ -68,7 +68,13 @@ from urllib.parse import urlencode
 
 from pycex.auth import okx_headers
 from pycex.base import BaseExchange
-from pycex.constants import CANDLE_VENUES, OKX_BASE, OKX_BROKER_ID
+from pycex.constants import (
+    CANDLE_VENUES,
+    OKX_BASE,
+    OKX_BROKER_ID,
+    OKX_HISTORY_CANDLE_WEIGHT,
+    OKX_RECENT_CANDLE_WEIGHT,
+)
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
@@ -255,15 +261,16 @@ class OKX(BaseExchange):
             params["before"] = str(since - 1)
         elif until is not None:
             params["after"] = str(until + 1)
-        async with self._rate_limiter.request("query"):
+        async with self._rate_limiter.request("query", weight=OKX_RECENT_CANDLE_WEIGHT):
             data = await self._http.get("/api/v5/market/candles", params=params)
         result = self._check(data)
         if not result:
             # The regular endpoint only serves a recent rolling window; older
             # ranges come back as an empty `data` array rather than an error.
             # Retry the identical query against history-candles, which covers
-            # OKX's full candle history.
-            async with self._rate_limiter.request("query"):
+            # OKX's full candle history. history-candles is half the recent cap,
+            # so it costs twice the weight on the shared query bucket.
+            async with self._rate_limiter.request("query", weight=OKX_HISTORY_CANDLE_WEIGHT):
                 data = await self._http.get("/api/v5/market/history-candles", params=params)
             result = self._check(data)
         candles = [_parse_candle(k) for k in result]

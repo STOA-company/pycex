@@ -86,8 +86,8 @@ def test_every_exchange_keeps_transport_and_budget_across_loops(cls: type[BaseEx
     ex = cls()
     ex._http.set_transport_factory(factory)
     limiter = ex._http._limiter
-    # X8 moves admission before signing into the adapter. Bybit retains the
-    # legacy HTTP limiter; the shared transport lifecycle is unchanged for all.
+    # X8 moves admission before signing into the adapter. Every venue, including
+    # Bybit, keeps that budget on the exchange instance across loops.
     throttle = getattr(ex, "_rate_limiter", None)
     if throttle is not None:
         clock = FakeClock()

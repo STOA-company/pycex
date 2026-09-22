@@ -16,12 +16,24 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from pycex.constants import (
+    BINANCE_LINEAR_ORDER_MINUTE_RATE_LIMIT,
     BINANCE_LINEAR_ORDER_RATE_LIMIT,
     BINANCE_LINEAR_WEIGHT_RATE_LIMIT,
     BINANCE_SPOT_ORDER_RATE_LIMIT,
     BINANCE_SPOT_WEIGHT_RATE_LIMIT,
-    CONSERVATIVE_MAX_INFLIGHT,
-    CONSERVATIVE_RATE_LIMIT,
+    BITGET_ORDER_RATE_LIMIT,
+    BITGET_PUBLIC_RATE_LIMIT,
+    BITHUMB_ORDER_RATE_LIMIT,
+    BITHUMB_PUBLIC_RATE_LIMIT,
+    BYBIT_IP_RATE_LIMIT,
+    BYBIT_LINEAR_ORDER_RATE_LIMIT,
+    BYBIT_PRIVATE_QUERY_RATE_LIMIT,
+    BYBIT_SPOT_ORDER_RATE_LIMIT,
+    DEFAULT_MAX_INFLIGHT,
+    KORBIT_ORDER_RATE_LIMIT,
+    KORBIT_PUBLIC_RATE_LIMIT,
+    OKX_ORDER_RATE_LIMIT,
+    OKX_QUERY_RATE_LIMIT,
     UPBIT_ORDER_RATE_LIMIT,
     UPBIT_PUBLIC_RATE_LIMIT,
     UPBIT_QUERY_RATE_LIMIT,
@@ -177,6 +189,15 @@ class ExchangeRateLimiter:
         def add(name: str, limit_period: tuple[int, float]) -> None:
             self._buckets[name] = _window(limit_period, now)
 
+        def add_split(query: tuple[int, float], order: tuple[int, float]) -> None:
+            if query[1] != order[1]:
+                raise ValueError("split rate limits must share a period")
+            add("query", query)
+            add("order", order)
+            # The shared window must not be tighter than either class.
+            add("total", (max(query[0], order[0]), query[1]))
+            self._concurrency = DEFAULT_MAX_INFLIGHT
+
         if self.exchange == "upbit":
             add("query", UPBIT_QUERY_RATE_LIMIT)
             add("order", UPBIT_ORDER_RATE_LIMIT)
@@ -184,16 +205,30 @@ class ExchangeRateLimiter:
             if self.market_type == "linear":
                 add("total", BINANCE_LINEAR_WEIGHT_RATE_LIMIT)
                 add("order", BINANCE_LINEAR_ORDER_RATE_LIMIT)
+                add("order_minute", BINANCE_LINEAR_ORDER_MINUTE_RATE_LIMIT)
             elif self.market_type == "spot":
                 add("total", BINANCE_SPOT_WEIGHT_RATE_LIMIT)
                 add("order", BINANCE_SPOT_ORDER_RATE_LIMIT)
             else:
                 raise ValueError(f"unsupported Binance market_type: {self.market_type!r}")
-        elif self.exchange in {"bithumb", "korbit", "bitget", "okx"}:
-            add("query", CONSERVATIVE_RATE_LIMIT)
-            add("order", CONSERVATIVE_RATE_LIMIT)
-            add("total", CONSERVATIVE_RATE_LIMIT)
-            self._concurrency = CONSERVATIVE_MAX_INFLIGHT
+        elif self.exchange == "bybit":
+            add("query", BYBIT_IP_RATE_LIMIT)
+            add("private", BYBIT_PRIVATE_QUERY_RATE_LIMIT)
+            if self.market_type == "linear":
+                add("order", BYBIT_LINEAR_ORDER_RATE_LIMIT)
+            elif self.market_type == "spot":
+                add("order", BYBIT_SPOT_ORDER_RATE_LIMIT)
+            else:
+                raise ValueError(f"unsupported Bybit market_type: {self.market_type!r}")
+            self._concurrency = DEFAULT_MAX_INFLIGHT
+        elif self.exchange == "okx":
+            add_split(OKX_QUERY_RATE_LIMIT, OKX_ORDER_RATE_LIMIT)
+        elif self.exchange == "bitget":
+            add_split(BITGET_PUBLIC_RATE_LIMIT, BITGET_ORDER_RATE_LIMIT)
+        elif self.exchange == "bithumb":
+            add_split(BITHUMB_PUBLIC_RATE_LIMIT, BITHUMB_ORDER_RATE_LIMIT)
+        elif self.exchange == "korbit":
+            add_split(KORBIT_PUBLIC_RATE_LIMIT, KORBIT_ORDER_RATE_LIMIT)
         else:
             raise ValueError(f"unsupported exchange for rate limiting: {self.exchange!r}")
 
@@ -243,6 +278,19 @@ class ExchangeRateLimiter:
             selected = [(self._buckets["total"], weight)]
             if kind == "order":
                 selected.append((self._buckets["order"], 1.0))
+                minute = self._buckets.get("order_minute")
+                if minute is not None:
+                    selected.append((minute, 1.0))
+            return [(bucket, charge) for bucket, charge in selected if charge]
+        if self.exchange == "bybit":
+            # Public calls spend the IP window. Private GETs also spend the
+            # tighter UID window. Orders spend both the IP window and the
+            # order window.
+            selected = [(self._buckets["query"], weight)]
+            if group == "private":
+                selected.append((self._buckets["private"], weight))
+            if kind == "order":
+                selected.append((self._buckets["order"], weight))
             return [(bucket, charge) for bucket, charge in selected if charge]
         else:
             names = [kind]

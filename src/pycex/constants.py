@@ -12,29 +12,59 @@ BINANCE_FAPI_TESTNET = "https://testnet.binancefuture.com"
 
 # ── Exchange request budgets ──
 #
+# Each count is floor(published cap * 0.8). The README «Rate limits» table is
+# the same list the tests literal-compare. 429 backoff is not part of this table.
+#
 # Upbit: https://docs.upbit.com/kr/reference/rate-limits
-# The live document currently lists orders as 12/s.  X8 deliberately keeps the
-# lower 8/s value below as a safety margin while the execution layer rolls out.
-UPBIT_QUERY_RATE_LIMIT = (30, 1.0)
-UPBIT_ORDER_RATE_LIMIT = (8, 1.0)
-UPBIT_PUBLIC_RATE_LIMIT = (10, 1.0)
+# Quotation groups including candles are 10/s per IP. Exchange `default` (private
+# queries) is 30/s per pocket. Order create is 12/s per pocket.
+UPBIT_QUERY_RATE_LIMIT = (24, 1.0)
+UPBIT_ORDER_RATE_LIMIT = (9, 1.0)
+UPBIT_PUBLIC_RATE_LIMIT = (8, 1.0)
 
-# Binance spot: https://developers.binance.com/docs/binance-spot-api-docs/websocket-api/rate-limits
-# Binance USD-M market data: https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information
-# Binance USD-M order quota: https://www.binance.com/en/support/announcement/detail/6bc47f8b8a05445cb07b30454fec4084
-# Quotas also read directly on 2026-09-12 (some documentation examples are older):
-# https://api.binance.com/api/v3/exchangeInfo?symbol=BTCUSDT
-# https://fapi.binance.com/fapi/v1/exchangeInfo
-BINANCE_SPOT_WEIGHT_RATE_LIMIT = (6000, 60.0)
-BINANCE_SPOT_ORDER_RATE_LIMIT = (100, 10.0)
-BINANCE_LINEAR_WEIGHT_RATE_LIMIT = (2400, 60.0)
-BINANCE_LINEAR_ORDER_RATE_LIMIT = (300, 10.0)
+# Binance spot weight 6000/min and orders 100/10s; USD-M weight 2400/min,
+# orders 300/10s and 1200/min. Read from exchangeInfo on 2026-09-22.
+# Spot klines weight 2: https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md
+BINANCE_SPOT_WEIGHT_RATE_LIMIT = (4800, 60.0)
+BINANCE_SPOT_ORDER_RATE_LIMIT = (80, 10.0)
+BINANCE_LINEAR_WEIGHT_RATE_LIMIT = (1920, 60.0)
+BINANCE_LINEAR_ORDER_RATE_LIMIT = (240, 10.0)
+BINANCE_LINEAR_ORDER_MINUTE_RATE_LIMIT = (960, 60.0)
 
-# Bithumb, Korbit, Bitget, and OKX: 문서 재확인 필요
-# Until each venue's current endpoint-specific rules are rechecked, retain a
-# deliberately small per-class and shared allowance plus one in-flight call.
-CONSERVATIVE_RATE_LIMIT = (5, 1.0)
-CONSERVATIVE_MAX_INFLIGHT = 1
+# Bybit IP limit 600/5s. Spot create 20/s, linear create 10/s.
+# Wallet, open orders, and executions are 50/s.
+# https://bybit-exchange.github.io/docs/v5/rate-limit
+BYBIT_IP_RATE_LIMIT = (480, 5.0)
+BYBIT_SPOT_ORDER_RATE_LIMIT = (16, 1.0)
+BYBIT_LINEAR_ORDER_RATE_LIMIT = (8, 1.0)
+BYBIT_PRIVATE_QUERY_RATE_LIMIT = (40, 1.0)
+
+# OKX candles 40/2s, history-candles and ticker 20/2s, place-order 60/2s
+# per instrument. Query bucket is the 20/2s class; recent candles use weight 0.5.
+# https://www.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks
+OKX_QUERY_RATE_LIMIT = (16, 2.0)
+OKX_ORDER_RATE_LIMIT = (48, 2.0)
+OKX_RECENT_CANDLE_WEIGHT = 0.5
+OKX_HISTORY_CANDLE_WEIGHT = 1.0
+
+# Bitget public market data 20/s.
+# https://www.bitget.com/api-doc/classic/contract/market/Get-Candle-Data
+# The order-endpoint cap was not confirmed, so the order bucket stays 5/s.
+BITGET_PUBLIC_RATE_LIMIT = (16, 1.0)
+BITGET_ORDER_RATE_LIMIT = (5, 1.0)
+
+# Bithumb public 150/s; order calls may be limited above 10/s.
+# https://apidocs.bithumb.com/docs/api-%EC%9A%94%EC%B2%AD-%EC%88%98-%EC%A0%9C%ED%95%9C-%EC%95%88%EB%82%B4
+BITHUMB_PUBLIC_RATE_LIMIT = (120, 1.0)
+BITHUMB_ORDER_RATE_LIMIT = (8, 1.0)
+
+# Korbit public 50/s, orders 30/s. api.korbit.co.kr still serves this API.
+# https://docs.korbit.co.kr/
+KORBIT_PUBLIC_RATE_LIMIT = (40, 1.0)
+KORBIT_ORDER_RATE_LIMIT = (24, 1.0)
+
+# Published limits are request rates, so these venues may keep several calls in flight.
+DEFAULT_MAX_INFLIGHT = 4
 
 # ── Bybit ──
 BYBIT_BASE = "https://api.bybit.com"
