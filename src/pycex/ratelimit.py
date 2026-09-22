@@ -42,6 +42,11 @@ from pycex.constants import (
 Clock = Callable[[], float]
 Sleep = Callable[[float], Awaitable[None]]
 
+# Each of these is published at 10/s per IP. Exchange default (group "query30",
+# or no group) is a separate 30/s pocket budget and must not share this bucket.
+# https://docs.upbit.com/kr/reference/rate-limits
+_UPBIT_QUOTATION_GROUPS = frozenset({"market", "candle", "ticker", "trade", "orderbook"})
+
 
 class TokenBucket:
     """A weighted token bucket whose balance survives sequential event loops."""
@@ -300,7 +305,7 @@ class ExchangeRateLimiter:
             return [(bucket, charge) for bucket, charge in selected if charge]
         else:
             names = [kind]
-            if self.exchange == "upbit" and group is not None:
+            if self.exchange == "upbit" and kind == "query" and group in _UPBIT_QUOTATION_GROUPS:
                 public = self._public_buckets.get(group)
                 if public is None:
                     public = _window(UPBIT_PUBLIC_RATE_LIMIT, self._clock())

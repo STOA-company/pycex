@@ -201,6 +201,30 @@ async def test_upbit_candle_group_ninth_request_waits() -> None:
     assert clock.now >= 1
 
 
+@pytest.mark.parametrize("group", ["query30", None])
+async def test_upbit_non_quotation_query_is_twenty_four_per_second(group: str | None) -> None:
+    """Exchange default and ungrouped queries stay on the 24/s bucket, not the 8/s quotation cap."""
+    clock = FakeClock()
+    limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
+    for _ in range(24):
+        async with limiter.request("query", group=group):
+            pass
+    assert clock.now == 0
+    async with limiter.request("query", group=group):
+        pass
+    assert clock.now >= 1
+
+
+async def test_upbit_candle_cap_does_not_apply_to_exchange_default() -> None:
+    clock = FakeClock()
+    limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
+    for _ in range(8):
+        async with limiter.request("query", group="candle"):
+            pass
+    async with limiter.request("query", group="query30"):
+        assert clock.now == 0
+
+
 @pytest.mark.parametrize("exchange", ["okx", "bitget", "bithumb", "korbit", "bybit"])
 async def test_confirmed_venues_allow_four_inflight_and_block_a_fifth(exchange: str) -> None:
     limiter = ExchangeRateLimiter(exchange)

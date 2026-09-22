@@ -172,7 +172,8 @@ async def test_preflight_sequence_waits_and_never_reaches_a_429_server() -> None
 
 
 @pytest.mark.parametrize("group", ["ticker", "orderbook", "candle", "trade", "market"])
-async def test_upbit_public_groups_enforce_eight_each(group: str) -> None:
+async def test_upbit_quotation_groups_enforce_eight_each(group: str) -> None:
+    """Each quotation group is 80% of the published 10/s IP cap, separate from default."""
     clock = FakeClock()
     limiter = ExchangeRateLimiter("upbit", clock=clock, sleep=clock.sleep)
     for _ in range(8):
