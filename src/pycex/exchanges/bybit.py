@@ -59,7 +59,7 @@ from pycex.exceptions import (
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
-from pycex.models.market import Market
+from pycex.models.market import Market, parse_listing_time
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -400,6 +400,7 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market | None:
         amount_step=float(step) if step not in (None, "") else None,
         min_notional=float(min_notional_raw) if min_notional_raw not in (None, "") else None,
         active=d.get("status") == "Trading",
+        listed_at=parse_listing_time(d.get("launchTime")),
         raw=d,
     )
 

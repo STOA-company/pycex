@@ -80,7 +80,7 @@ from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market
+from pycex.models.market import Market, parse_listing_time
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -427,6 +427,7 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         amount_step=amount_step,
         min_notional=min_notional,
         active=d.get("status") == "TRADING",
+        listed_at=parse_listing_time(d.get("onboardDate")) if market_type == "linear" else None,
         raw=d,
     )
 
