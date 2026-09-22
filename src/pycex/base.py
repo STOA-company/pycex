@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -106,6 +107,7 @@ class BaseExchange(ABC):
             since: int | None = None,
             until: int | None = None,
             limit: int | None = None,
+            closed_only: bool = False,
         ) -> list[Candle]: ...
         def fetch_trades_sync(self, symbol: str, *, limit: int = 100) -> list[Trade]: ...
         def fetch_markets_sync(self) -> list[Market]: ...
@@ -173,25 +175,39 @@ class BaseExchange(ABC):
         since: int | None = None,
         until: int | None = None,
         limit: int | None = None,
+        closed_only: bool = False,
     ) -> list[Candle]:
         """Fetch OHLCV candles, paginating over ``_fetch_candles_page`` when ``since``/``until`` are given.
 
         The page walk is driven by :attr:`candle_paging` — see that attribute and the
         two ``_walk_*`` helpers. Whichever direction the venue pages in, the result is
         deduplicated, sorted ascending, cut at ``until`` and sliced to ``limit``.
+
+        ``closed_only=True`` drops a bar whose end is still ahead of now:
+        keep ``timestamp + timeframe_ms <= now_ms``. ``Candle.timestamp`` is the
+        bar open; adapters that receive a close time normalize it to the open
+        before this check.
         """
         if timeframe not in self.supported_timeframes:
             raise NotSupportedError(f"{self.name} does not support timeframe {timeframe}")
         native = self.to_native(symbol)
         if since is None:
-            return await self._fetch_candles_page(native, timeframe, since=None, until=until, limit=limit or 100)
+            page = await self._fetch_candles_page(native, timeframe, since=None, until=until, limit=limit or 100)
+            return self._drop_open_bars(page, timeframe) if closed_only else page
         out: dict[int, Candle] = {}
         if self.candle_paging == "forward":
             await self._walk_forward(out, native, timeframe, since=since, until=until, limit=limit)
         else:
             await self._walk_backward(out, native, timeframe, since=since, until=until, limit=limit)
         result = [out[k] for k in sorted(out)]
-        return result[:limit] if limit else result
+        if limit is not None:
+            result = result[:limit]
+        return self._drop_open_bars(result, timeframe) if closed_only else result
+
+    def _drop_open_bars(self, candles: list[Candle], timeframe: str) -> list[Candle]:
+        now_ms = int(time.time() * 1000)
+        span = TIMEFRAME_MS[timeframe]
+        return [c for c in candles if c.timestamp + span <= now_ms]
 
     def _keep(self, page: list[Candle], out: dict[int, Candle], since: int, until: int | None) -> list[Candle]:
         """The bars of ``page`` that are in range and not already collected."""
