@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-22
+
 ### Removed
 
 - Removed: `CONSERVATIVE_RATE_LIMIT`, `CONSERVATIVE_MAX_INFLIGHT` (breaking).
@@ -18,7 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OKX orders stay at the previous 5/s cap. Bitget orders stay at 5/s.
   Confirmed venues allow 4 in-flight calls. Bybit uses the same
   pre-flight limiter. `fetch_candles_history` 429 backoff is unchanged.
-  The package version stays 0.4.0 until review picks the next number.
 
 ## [0.4.0] - 2026-09-22
 

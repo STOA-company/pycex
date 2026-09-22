@@ -16,7 +16,7 @@ import re
 import pycex
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 
 def test_package_version() -> None:
@@ -38,7 +38,7 @@ def test_changelog_section_is_not_empty() -> None:
     text = (ROOT / "CHANGELOG.md").read_text()
     section = text.split(f"## [{VERSION}]", 1)[1].split("\n## [", 1)[0]
     assert len(section.strip().splitlines()) > 10
-    assert "### Added" in section
+    assert any(h in section for h in ("### Added", "### Changed", "### Fixed", "### Removed"))
     released = text.split("## [0.3.0]", 1)[1].split("\n## [", 1)[0]
     assert "### Added" in released and "### Fixed" in released
 

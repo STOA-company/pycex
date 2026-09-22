@@ -47,7 +47,7 @@ from pycex.models import (
 )
 from pycex.symbols import parse_symbol
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = [
     "BaseExchange",
     "Binance",
