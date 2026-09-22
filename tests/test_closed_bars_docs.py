@@ -16,7 +16,7 @@ def test_changelog_0_3_0_lists_closed_bars_and_listing_time() -> None:
     for name in ("closed_only", "listed_at", "fetch_candles_history", "CANDLE_VENUES"):
         assert name in section
     assert 'version = "0.3.0"' in (ROOT / "pyproject.toml").read_text()
-    assert '## [0.3.0]' in (ROOT / "docs/changelog.md").read_text()
+    assert "## [0.3.0]" in (ROOT / "docs/changelog.md").read_text()
     docs_section = _section((ROOT / "docs/changelog.md").read_text(), "## [0.3.0]")
     assert "closed_only" in docs_section
     assert "fetch_candles_history" in docs_section
