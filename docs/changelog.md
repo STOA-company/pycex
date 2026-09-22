@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-22
+## [0.4.0] - 2026-09-22
 
 ### Added
 
@@ -21,6 +21,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backing off on `RateLimitError` at most five times.
 - `CANDLE_VENUES` is the code table of page limit, paging direction, open-time
   basis, and supported timeframes. Anything else raises `NotSupportedError`.
+
+## [0.3.0] - 2026-09-10
+
+Hardening pass on the OKX adapter, driven by six **real-money OKX runs** on
+2026-09-10 (`ledger.jsonl`, 321 records, 32 rejected orders). Every item below
+answers something that actually went wrong on a live account. Recorded
+request/response pairs from those runs are kept in
+`tests/fixtures/okx/live_20260910.json` and replayed as contract tests
+(`tests/exchanges/test_okx_live_replay.py`) — no live keys, no network.
+
+### Fixed
+
+- **`*_sync` twins now survive repeated calls on the same instance.** Each
+  twin runs its call in a fresh `asyncio.run` loop, but the `httpx.AsyncClient`
+  (and its connection pool) was built once in `HTTPClient.__init__` and bound
+  to the first loop — so the **second** call died with `RuntimeError: Event
+  loop is closed`. `HTTPClient` now tracks the loop its client belongs to and
+  rebuilds the client **and its transport** when the loop changes or the client
+  was closed; each sync twin releases the pool before its loop dies. The rate
+  limiter is deliberately **not** rebuilt — its token budget belongs to the
+  `HTTPClient`, not to one loop (see below).
+- **An injected transport survives the rebuild — it used to be silently
+  dropped.** Recorded-fixture tests installed a mock by assigning a finished
+  `httpx.AsyncClient` to `HTTPClient._client`. Because the rebuild in `_bind()`
+  only knows about `transport_factory`, the **second** `*_sync` call built a
+  real client and went out to the live venue: a probe on 2026-09-10 saw call 1
+  return the mocked `last=1.0` and call 2 return `78048.9` — a genuine OKX
+  price — from an `AsyncHTTPTransport`. Injecting a client object is now
+  rejected (`_client` is read-only); `HTTPClient.set_transport_factory()` is the
+  one supported path, and a factory that returns `None` raises rather than
+  letting httpx substitute a real transport.
+- **The rate limiter is no longer reset on every `*_sync` call.** `_bind()`
+  rebuilt the `RateLimiter` along with the client, and a fresh bucket starts
+  full — so every sync call was a "first" call and the limit did not exist.
+  Measured on 2026-09-10: 40 calls took 0.03 s via the sync twins against
+  3.02 s via `await` at `rate=10/s`; both are 3.0 s now. Only the loop-bound
+  `asyncio.Lock` is rebuilt when the running loop changes; the token budget
+  carries over.
+- **Spot `tdMode` is decided from the measured account level, never assumed.**
+  It was hard-coded to `"cash"`, which an `acctLv=3` (multi-currency margin)
+  account rejects outright — `51000 Parameter tdMode error` wiped out four
+  live scenarios. `create_order` now measures `acctLv` once via
+  `fetch_account_config()` (1/2 -> `cash`, 3/4 -> `cross`) and **raises rather
+  than sending an order** when the level is unknown or the lookup fails.
+- **Order rejections keep their reason.** A rejected OKX order arrives as HTTP
+  200 with top-level `code: "1"`, an empty `msg`, and the real reason in
+  `data[0].sCode`/`sMsg`. Reading the top-level code first reported every
+  rejection as the meaningless code `"1"`; order/cancel responses now read
+  `sCode` first.
+- `Position` parsing: hedge-mode rows (`posSide`) are read correctly, and a
+  zero position is `"flat"` instead of being reported as a short.
+
+### Added
+
+- `create_order(..., client_order_id=...)` — OKX `clOrdId`, the venue-level
+  idempotency key, validated (1-32 alphanumeric) before the request goes out.
+  pycex never generates one: the key is the caller's policy. `Order` gains
+  `client_order_id`.
+- `create_order(..., reduce_only=, tgt_ccy=, tp_px=, sl_px=)` — reduce-only
+  (SWAP), attached take-profit/stop-loss (`attachAlgoOrds`), and the spot
+  market-order size unit. A spot market order **always** states `tgtCcy`
+  (buy -> `quote_ccy`, sell -> `base_ccy`) instead of relying on the venue
+  default.
+- `set_leverage(symbol, lever, mgn_mode)` (`BaseExchange` contract + OKX
+  implementation, with a `set_leverage_sync` twin). No leverage cap lives in
+  the SDK — that is the caller's risk policy.
+- `fetch_available_balance(asset)` (`BaseExchange` contract + OKX per-currency
+  `availBal` implementation, with a sync twin). Re-measures on every call and
+  never caches: this is the only honest answer to "has my last fill settled".
+- `Position.margin_mode` (`cross`/`isolated` as reported, `None` when the venue
+  did not say) and `Position.signed_amount`. `Position.amount` is documented as
+  **absolute** — direction lives in `side` alone.
+- `fetch_account_config()` on OKX — `acctLv`, `posMode`, `perm`, `kycLv` for a
+  read-only connectivity probe; `OKX.account_level` exposes the measured level
+  read-only.
+- `PyCexError.retryable` and `SettlementPendingError` — OKX `51008` is
+  classified as "not settled **yet**" (retryable, still an
+  `InsufficientBalanceError`) rather than a flat "insufficient funds". pycex
+  classifies only; it never retries and holds no wait policy.
 
 ## [0.2.0] - 2026-08-30
 

@@ -130,6 +130,18 @@ async def test_history_forward_page_boundary_is_two_bars() -> None:
     assert len(ex.calls) == 3
 
 
+async def test_history_yields_the_first_page_before_the_second_request() -> None:
+    """Three pages must surface the first bar before the adapter is asked for page two."""
+    ex = _Hist()
+    agen = ex.fetch_candles_history("BTC/USDT", "1m", 0, 4 * _TF).__aiter__()
+    first = await agen.__anext__()
+    assert first.timestamp == 0
+    assert len(ex.calls) == 1
+    rest = [c async for c in agen]
+    assert len(ex.calls) == 3
+    assert [first.timestamp, *[c.timestamp for c in rest]] == [0, _TF, 2 * _TF, 3 * _TF, 4 * _TF]
+
+
 async def test_history_stops_when_the_page_is_empty() -> None:
     ex = _EmptyAfter()
     out = [c async for c in ex.fetch_candles_history("BTC/USDT", "1m", 0, 10 * _TF)]

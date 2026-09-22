@@ -1,7 +1,8 @@
-"""A-10 — 0.3.0 릴리스가 **한 벌**로 유지된다.
+"""A-10 — 릴리스 노트가 버전 표기와 **한 벌**로 유지된다.
 
 🚨 공개본과 사설 포크가 갈리는 사고는 «버전만 올리고 문서를 안 쓰는» 한 걸음에서
 시작한다. 버전 표기 세 곳(pyproject·__init__·CHANGELOG)이 어긋나면 빨강이다.
+0.3.0 에서 더한 공개 API 는 그 절에 남아 있다.
 
 이 스위트에는 제품 전용 분기가 없다 — 09-10 강건화(A-1~A-9)는 전부 공개본에
 그대로 들어간다.
@@ -15,7 +16,7 @@ import re
 import pycex
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 def test_package_version() -> None:
@@ -37,12 +38,14 @@ def test_changelog_section_is_not_empty() -> None:
     text = (ROOT / "CHANGELOG.md").read_text()
     section = text.split(f"## [{VERSION}]", 1)[1].split("\n## [", 1)[0]
     assert len(section.strip().splitlines()) > 10
-    assert "### Added" in section and "### Fixed" in section
+    assert "### Added" in section
+    released = text.split("## [0.3.0]", 1)[1].split("\n## [", 1)[0]
+    assert "### Added" in released and "### Fixed" in released
 
 
 def test_the_new_public_surface_is_documented() -> None:
     """우회 2 — 0.3.0 에서 더한 공개 API 가 릴리스 노트에 빠지지 않는다."""
-    section = (ROOT / "CHANGELOG.md").read_text().split(f"## [{VERSION}]", 1)[1].split("\n## [", 1)[0]
+    section = (ROOT / "CHANGELOG.md").read_text().split("## [0.3.0]", 1)[1].split("\n## [", 1)[0]
     for name in (
         "client_order_id",
         "set_leverage",

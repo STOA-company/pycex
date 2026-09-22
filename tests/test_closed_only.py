@@ -106,6 +106,21 @@ def test_closed_only_sync_twin_uses_the_same_rule(monkeypatch: pytest.MonkeyPatc
     assert [c.timestamp for c in out] == [0, _TF, 2 * _TF]
 
 
+class _Newest(_Clock):
+    """Serves the newest ``limit`` bars, the way a no-``since`` candle call does."""
+
+    async def _fetch_candles_page(self, native, timeframe, *, since, until, limit):
+        return [_bar(t) for t in self._bars[-limit:]]
+
+
+async def test_closed_only_limit_keeps_five_closed_bars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``limit`` counts bars that have ended. The forming bar must not take a slot."""
+    _freeze(monkeypatch, now_ms=5 * _TF)
+    ex = _Newest([0, _TF, 2 * _TF, 3 * _TF, 4 * _TF, 5 * _TF])
+    out = await ex.fetch_candles("BTC/USDT", "1m", limit=5, closed_only=True)
+    assert [c.timestamp for c in out] == [0, _TF, 2 * _TF, 3 * _TF, 4 * _TF]
+
+
 def _utc_ms(text: str) -> int:
     return int(datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp() * 1000)
 
