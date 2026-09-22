@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from pathlib import Path
 
 import httpx
 import pytest
 
+from pycex import constants
 from pycex.exchanges.okx import OKX
 from pycex.ratelimit import ExchangeRateLimiter
 from tests.test_exchange_rate_limiter import FakeClock
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Literal rows. Same numbers as $WORK/LIMITS.md and the README «Rate limits» table.
+# Literal rows. Same numbers as docs/rate-limits.md. README points at that file.
 # concurrency "" means the limiter does not add an in-flight cap.
 LIMIT_ROWS: tuple[tuple[str, str, str, int, float, int | None], ...] = (
     ("binance", "spot", "total", 4800, 60.0, None),
@@ -41,10 +43,9 @@ LIMIT_ROWS: tuple[tuple[str, str, str, int, float, int | None], ...] = (
 )
 
 
-def _readme_rows() -> list[tuple[str, str, str, int, float, int | None]]:
-    text = (ROOT / "README.md").read_text()
-    assert "## Rate limits" in text
-    start = text.index("## Rate limits")
+def _doc_rows() -> list[tuple[str, str, str, int, float, int | None]]:
+    text = (ROOT / "docs" / "rate-limits.md").read_text()
+    start = text.index("| exchange |")
     section = text[start:].split("\n## ", 1)[0]
     rows: list[tuple[str, str, str, int, float, int | None]] = []
     for line in section.splitlines():
@@ -58,8 +59,66 @@ def _readme_rows() -> list[tuple[str, str, str, int, float, int | None]]:
     return rows
 
 
-def test_readme_rate_limit_table_matches_literals() -> None:
-    assert _readme_rows() == list(LIMIT_ROWS)
+def test_readme_rate_limits_point_at_the_doc() -> None:
+    text = (ROOT / "README.md").read_text()
+    start = text.index("## Rate limits")
+    section = text[start:].split("\n## ", 1)[0]
+    assert "docs/rate-limits.md" in section
+    assert "| exchange |" not in section
+
+
+def test_rate_limit_doc_matches_literals() -> None:
+    assert _doc_rows() == list(LIMIT_ROWS)
+
+
+_UNVERIFIED = "공시값 미확인(벤더 문서 재확인 실패 — 2026-09-22)"
+
+# Adopted constant, published constant. Published is None when the vendor page
+# was not reconfirmed (OKX, Bitget).
+_PUBLISHED_PAIRS: tuple[tuple[str, str], ...] = (
+    ("UPBIT_QUERY_RATE_LIMIT", "UPBIT_QUERY_PUBLISHED_CAP"),
+    ("UPBIT_ORDER_RATE_LIMIT", "UPBIT_ORDER_PUBLISHED_CAP"),
+    ("UPBIT_PUBLIC_RATE_LIMIT", "UPBIT_PUBLIC_PUBLISHED_CAP"),
+    ("BINANCE_SPOT_WEIGHT_RATE_LIMIT", "BINANCE_SPOT_WEIGHT_PUBLISHED_CAP"),
+    ("BINANCE_SPOT_ORDER_RATE_LIMIT", "BINANCE_SPOT_ORDER_PUBLISHED_CAP"),
+    ("BINANCE_LINEAR_WEIGHT_RATE_LIMIT", "BINANCE_LINEAR_WEIGHT_PUBLISHED_CAP"),
+    ("BINANCE_LINEAR_ORDER_RATE_LIMIT", "BINANCE_LINEAR_ORDER_PUBLISHED_CAP"),
+    ("BINANCE_LINEAR_ORDER_MINUTE_RATE_LIMIT", "BINANCE_LINEAR_ORDER_MINUTE_PUBLISHED_CAP"),
+    ("BYBIT_IP_RATE_LIMIT", "BYBIT_IP_PUBLISHED_CAP"),
+    ("BYBIT_SPOT_ORDER_RATE_LIMIT", "BYBIT_SPOT_ORDER_PUBLISHED_CAP"),
+    ("BYBIT_LINEAR_ORDER_RATE_LIMIT", "BYBIT_LINEAR_ORDER_PUBLISHED_CAP"),
+    ("BYBIT_PRIVATE_QUERY_RATE_LIMIT", "BYBIT_PRIVATE_QUERY_PUBLISHED_CAP"),
+    ("OKX_QUERY_RATE_LIMIT", "OKX_QUERY_PUBLISHED_CAP"),
+    ("OKX_ORDER_RATE_LIMIT", "OKX_ORDER_PUBLISHED_CAP"),
+    ("BITGET_PUBLIC_RATE_LIMIT", "BITGET_PUBLIC_PUBLISHED_CAP"),
+    ("BITGET_ORDER_RATE_LIMIT", "BITGET_ORDER_PUBLISHED_CAP"),
+    ("BITHUMB_PUBLIC_RATE_LIMIT", "BITHUMB_PUBLIC_PUBLISHED_CAP"),
+    ("BITHUMB_ORDER_RATE_LIMIT", "BITHUMB_ORDER_PUBLISHED_CAP"),
+    ("KORBIT_PUBLIC_RATE_LIMIT", "KORBIT_PUBLIC_PUBLISHED_CAP"),
+    ("KORBIT_ORDER_RATE_LIMIT", "KORBIT_ORDER_PUBLISHED_CAP"),
+)
+
+
+def test_okx_and_bitget_published_caps_are_unverified() -> None:
+    doc = (ROOT / "docs" / "rate-limits.md").read_text()
+    assert doc.count(_UNVERIFIED) >= 2
+    for name in (
+        "OKX_QUERY_PUBLISHED_CAP",
+        "OKX_ORDER_PUBLISHED_CAP",
+        "BITGET_PUBLIC_PUBLISHED_CAP",
+        "BITGET_ORDER_PUBLISHED_CAP",
+    ):
+        assert getattr(constants, name) is None
+
+
+@pytest.mark.parametrize("adopted_name,published_name", _PUBLISHED_PAIRS)
+def test_adopted_rate_is_at_most_80_percent_of_published(adopted_name: str, published_name: str) -> None:
+    published = getattr(constants, published_name)
+    if published is None:
+        return
+    adopted = getattr(constants, adopted_name)
+    assert adopted[1] == published[1]
+    assert adopted[0] <= math.floor(0.8 * published[0])
 
 
 @pytest.mark.parametrize("exchange,market,bucket,limit,period,concurrency", LIMIT_ROWS)
