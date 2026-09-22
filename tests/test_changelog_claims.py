@@ -35,9 +35,12 @@ def test_changelog_records_the_rate_limiter_lifetime_fix() -> None:
 
 
 def test_unreleased_records_conservative_constant_removal() -> None:
-    """The shared 5/s names are a breaking removal, and they are gone from the package."""
-    unreleased = CHANGELOG.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
-    assert "Removed: `CONSERVATIVE_RATE_LIMIT`, `CONSERVATIVE_MAX_INFLIGHT` (breaking)" in unreleased
+    """The shared 5/s names are a breaking removal, and they are gone from the package.
+
+    Written while the note still sat under Unreleased (PR #11); the 0.4.1 cut moved it
+    into a dated section, so this checks the CHANGELOG as a whole rather than one heading.
+    """
+    assert "Removed: `CONSERVATIVE_RATE_LIMIT`, `CONSERVATIVE_MAX_INFLIGHT` (breaking)" in CHANGELOG
     package = "\n".join(path.read_text() for path in (ROOT / "src").rglob("*.py"))
     assert "CONSERVATIVE_RATE_LIMIT" not in package
     assert "CONSERVATIVE_MAX_INFLIGHT" not in package
