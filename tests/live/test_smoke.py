@@ -61,6 +61,18 @@ PAGINATION_CASES = [
     ("bithumb", "spot", "BTC/KRW", "1d", 300 * _DAY_MS, _DAY_MS),
 ]
 
+# Spot BTC on each of the seven venues. 1m bars share a UTC minute boundary
+# (daily boundaries differ; minute bars do not).
+CLOSED_ONLY_CASES = [
+    ("binance", "spot", "BTC/USDT"),
+    ("bybit", "spot", "BTC/USDT"),
+    ("okx", "spot", "BTC/USDT"),
+    ("bitget", "spot", "BTC/USDT"),
+    ("upbit", "spot", "BTC/KRW"),
+    ("bithumb", "spot", "BTC/KRW"),
+    ("korbit", "spot", "BTC/KRW"),
+]
+
 # Venues whose public market-data surface answers an unknown market with the
 # KRW-v1 error envelope (Bithumb serves it with HTTP 200 — see KrwV1Mixin._check).
 UNKNOWN_SYMBOL_CASES = [("upbit", "NOPE/KRW"), ("bithumb", "NOPE/KRW")]
@@ -118,6 +130,21 @@ async def test_candle_pagination(name: str, mt: str, symbol: str, timeframe: str
         assert len(timestamps) == len(set(timestamps)), "candles must have no duplicate timestamps"
         assert all(b - a > 0 for a, b in zip(timestamps, timestamps[1:])), "candles must be strictly ascending"
         assert all(since <= t <= until for t in timestamps), "candles must stay inside [since, until]"
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("name,mt,symbol", CLOSED_ONLY_CASES)
+async def test_closed_only_last_1m_bar(name: str, mt: str, symbol: str) -> None:
+    """Public, unauthenticated. The last 1m bar must already have ended."""
+    now_ms = int(time.time() * 1000)
+    async with create_exchange(name, market_type=mt) as ex:
+        markets = await ex.fetch_markets()
+        assert len(markets) >= 1
+        assert any(m.symbol == symbol for m in markets)
+        candles = await ex.fetch_candles(symbol, "1m", limit=5, closed_only=True)
+        assert candles, f"{name} returned no closed 1m bars"
+        assert all(c.timestamp + 60_000 <= now_ms for c in candles)
+        assert candles[-1].timestamp + 60_000 <= int(time.time() * 1000)
 
 
 @pytest.mark.live

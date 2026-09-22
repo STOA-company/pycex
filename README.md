@@ -185,15 +185,15 @@ with Bybit() as ex:
 페이징합니다. 페이징 방향은 거래소마다 다르고, **문서가 아니라 실측으로**
 정했습니다 (2026-08-30 공개 엔드포인트 프로브):
 
-| Exchange | 1페이지 상한 | 페이징 방향 | 커서 파라미터 |
-|----------|:---:|:---:|---|
-| Binance (spot·linear) | 200 | forward | `startTime` — 가장 **오래된** 구간부터 |
-| Bybit (spot·linear) | 200 | backward | `end` |
-| OKX (spot·linear) | 100 | backward | `after` |
-| Bitget (spot·linear) | 200 | backward | `endTime` |
-| Upbit | 200 | backward | `to` |
-| Bithumb | 200 | backward | `to` |
-| Korbit | 200 | backward | `end` |
+| Exchange | 1페이지 상한 | 페이징 방향 | 봉 시각 | timeframe | 커서 파라미터 |
+|----------|:---:|:---:|:---:|---|---|
+| Binance (spot·linear) | 200 | forward | open | 1m 5m 15m 1h 4h 1d | `startTime` — 가장 **오래된** 구간부터 |
+| Bybit (spot·linear) | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `end` |
+| OKX (spot·linear) | 100 | backward | open | 1m 5m 15m 1h 4h 1d | `after` |
+| Bitget (spot·linear) | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `endTime` |
+| Upbit | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `to` |
+| Bithumb | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `to` |
+| Korbit | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `end` |
 
 - **backward** = 그 거래소의 캔들 엔드포인트는 `since` 를 시작점으로 쓰지 않고
   `until`(없으면 "지금") 기준으로 **가장 최근** 봉부터 되돌려줍니다. 그래서
@@ -206,6 +206,48 @@ with Bybit() as ex:
   `[since, until]` 안 · `limit` 개까지**.
 - 실측 결과(2026-08-30, 11개 surface 전부): 1h × 15일 = 360/360봉,
   1d × 300일 = 300/300봉. 재현은 `pytest -m live tests/live -k pagination`.
+- 위 표의 숫자는 `pycex.constants.CANDLE_VENUES` 와 같다. 표에 없는
+  timeframe(`3m`, `1w` 등)은 `NotSupportedError`.
+- 봉 시각은 일곱 곳 모두 **시작(open)**. 거래소가 종료 시각을 주는 경우(Binance
+  kline index 6)도 어댑터가 시작으로 맞춘 뒤 `Candle.timestamp`에 넣는다.
+
+### 닫힌 봉과 소급
+
+`closed_only=True` 이면 아직 끝나지 않은 봉을 빼니다. 판정은
+`timestamp + timeframe_ms <= now_ms` (봉 종료 ≤ 지금)입니다.
+
+```python
+from pycex import Binance
+
+with Binance() as ex:
+    closed = ex.fetch_candles_sync("BTC/USDT", "1m", limit=5, closed_only=True)
+
+    # since 부터 마지막 닫힌 봉까지. 페이지 상한·빈 응답·429 백오프(최대 5회)는 도우미가 처리합니다.
+    history = ex.fetch_candles_history_sync("BTC/USDT", "1m", since=1_700_000_000_000)
+```
+
+`fetch_markets()` 의 `Market.listed_at` 은 거래소가 주는 상장 시각(UTC)이고,
+없으면 `None` 입니다 (업비트·빗썸·코빗·바이낸스 현물·비트겟 현물은 보통 `None`).
+
+### Closed bars
+
+`Candle.timestamp` is the bar **open** (UTC epoch ms) on every exchange.
+`closed_only=True` keeps a bar only when `timestamp + timeframe_ms <= now_ms`.
+
+```python
+from pycex import Binance
+
+with Binance() as ex:
+    closed = ex.fetch_candles_sync("BTC/USDT", "1m", limit=5, closed_only=True)
+    history = ex.fetch_candles_history_sync("BTC/USDT", "1m", since=1_700_000_000_000)
+```
+
+`fetch_candles_history` is the async generator; the `_sync` twin returns a
+`list`. With `until` omitted it stops at the last closed bar. An empty page
+ends the walk. `RateLimitError` sleeps for `Retry-After` when the exchange
+sends one, otherwise 1, 2, 4, 8, 16 seconds, at most five times.
+`Market.listed_at` is the venue listing time, or `None` when the venue does
+not publish one. Page limits and timeframes live in `CANDLE_VENUES`.
 
 🚨 **Upbit·Bithumb 의 `to` 는 타임존 해석이 다릅니다.** Upbit 은 `Z` 접미사를
 받고 naive 값을 **UTC** 로 읽습니다. Bithumb 은 타임존 접미사가 붙으면 (`Z`,

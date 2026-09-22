@@ -65,6 +65,7 @@ from pycex.constants import (
     BINANCE_FAPI,
     BINANCE_FAPI_TESTNET,
     BINANCE_TESTNET,
+    CANDLE_VENUES,
     QUOTE_SUFFIXES,
 )
 from pycex.exceptions import (
@@ -80,7 +81,7 @@ from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market
+from pycex.models.market import Market, parse_listing_time
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -135,7 +136,9 @@ _PATHS: dict[str, dict[str, str]] = {
 class Binance(BaseExchange):
     name = "binance"
     # `startTime` serves the oldest `limit` bars from it (live probe 2026-08-30).
-    candle_paging = "forward"
+    candle_page_limit = CANDLE_VENUES["binance"].page_limit
+    candle_paging = CANDLE_VENUES["binance"].paging
+    supported_timeframes = CANDLE_VENUES["binance"].timeframes
 
     def __init__(
         self,
@@ -427,6 +430,7 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         amount_step=amount_step,
         min_notional=min_notional,
         active=d.get("status") == "TRADING",
+        listed_at=parse_listing_time(d.get("onboardDate")) if market_type == "linear" else None,
         raw=d,
     )
 

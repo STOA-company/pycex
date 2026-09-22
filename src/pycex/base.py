@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pycex.constants import TIMEFRAME_MS
-from pycex.exceptions import NotSupportedError
+from pycex.exceptions import NotSupportedError, RateLimitError
+
+# One attempt plus five backoffs. Only fetch_candles_history retries.
+_HISTORY_ATTEMPTS = 6
 
 if TYPE_CHECKING:
     from pycex.http import HTTPClient
@@ -106,6 +110,7 @@ class BaseExchange(ABC):
             since: int | None = None,
             until: int | None = None,
             limit: int | None = None,
+            closed_only: bool = False,
         ) -> list[Candle]: ...
         def fetch_trades_sync(self, symbol: str, *, limit: int = 100) -> list[Trade]: ...
         def fetch_markets_sync(self) -> list[Market]: ...
@@ -173,79 +178,208 @@ class BaseExchange(ABC):
         since: int | None = None,
         until: int | None = None,
         limit: int | None = None,
+        closed_only: bool = False,
     ) -> list[Candle]:
         """Fetch OHLCV candles, paginating over ``_fetch_candles_page`` when ``since``/``until`` are given.
 
         The page walk is driven by :attr:`candle_paging` — see that attribute and the
         two ``_walk_*`` helpers. Whichever direction the venue pages in, the result is
-        deduplicated, sorted ascending, cut at ``until`` and sliced to ``limit``.
+        deduplicated, sorted ascending and cut at ``until``. ``closed_only`` drops the
+        still-open bar before the result is sliced to ``limit``.
+
+        ``closed_only=True`` drops a bar whose end is still ahead of now:
+        keep ``timestamp + timeframe_ms <= now_ms``. ``Candle.timestamp`` is the
+        bar open; adapters that receive a close time normalize it to the open
+        before this check.
         """
         if timeframe not in self.supported_timeframes:
             raise NotSupportedError(f"{self.name} does not support timeframe {timeframe}")
         native = self.to_native(symbol)
         if since is None:
-            return await self._fetch_candles_page(native, timeframe, since=None, until=until, limit=limit or 100)
+            # Ask for one extra bar so the still-open bar does not consume ``limit``.
+            ask = limit or 100
+            if closed_only and limit is not None:
+                ask += 1
+            page = await self._fetch_candles_page(native, timeframe, since=None, until=until, limit=ask)
+            if closed_only:
+                page = self._drop_open_bars(page, timeframe)
+            if limit is not None:
+                page = page[:limit]
+            return page
         out: dict[int, Candle] = {}
-        if self.candle_paging == "forward":
-            await self._walk_forward(out, native, timeframe, since=since, until=until, limit=limit)
-        else:
-            await self._walk_backward(out, native, timeframe, since=since, until=until, limit=limit)
+        pages = (
+            self._walk_forward(native, timeframe, since=since, until=until, limit=limit)
+            if self.candle_paging == "forward"
+            else self._walk_backward(native, timeframe, since=since, until=until, limit=limit)
+        )
+        async for page in pages:
+            for candle in page:
+                out[candle.timestamp] = candle
         result = [out[k] for k in sorted(out)]
-        return result[:limit] if limit else result
+        if closed_only:
+            result = self._drop_open_bars(result, timeframe)
+        if limit is not None:
+            result = result[:limit]
+        return result
 
-    def _keep(self, page: list[Candle], out: dict[int, Candle], since: int, until: int | None) -> list[Candle]:
-        """The bars of ``page`` that are in range and not already collected."""
-        return [
-            c
-            for c in page
-            if c.timestamp >= since and (until is None or c.timestamp <= until) and c.timestamp not in out
-        ]
+    async def fetch_candles_history(
+        self,
+        symbol: str,
+        timeframe: str,
+        since: int,
+        until: int | None = None,
+    ) -> AsyncIterator[Candle]:
+        """Yield candles from ``since`` through ``until``, paging at the venue limit.
+
+        ``until=None`` stops at the last closed bar (``timestamp + timeframe_ms <= now_ms``).
+        An empty page ends the walk. ``RateLimitError`` waits for ``retry_after`` when
+        the exchange set it, otherwise 1, 2, 4, 8, 16 seconds, at most five times.
+        Any other error is raised on the first failure. No other method retries.
+
+        A forward venue yields each page before the next request. A backward venue
+        serves the newest page first; those pages are emitted oldest-first so the
+        stream stays ascending, with no timestamp repeated from the page before.
+        """
+        if timeframe not in self.supported_timeframes:
+            raise NotSupportedError(f"{self.name} does not support timeframe {timeframe}")
+        bound = until if until is not None else int(time.time() * 1000) - TIMEFRAME_MS[timeframe]
+        native = self.to_native(symbol)
+        if self.candle_paging == "forward":
+            async for page in self._walk_forward(native, timeframe, since=since, until=bound, limit=None, retry=True):
+                for candle in page:
+                    yield candle
+            return
+        # Newest page arrives first. An ascending stream emits the oldest page
+        # first, so these pages are held until the walk reaches ``since``.
+        held: list[list[Candle]] = []
+        async for page in self._walk_backward(native, timeframe, since=since, until=bound, limit=None, retry=True):
+            held.append(page)
+        for page in reversed(held):
+            for candle in page:
+                yield candle
+
+    def fetch_candles_history_sync(
+        self,
+        symbol: str,
+        timeframe: str,
+        since: int,
+        until: int | None = None,
+    ) -> list[Candle]:
+        """Blocking twin of :meth:`fetch_candles_history`. Returns the full list."""
+
+        async def _collect() -> list[Candle]:
+            try:
+                return [c async for c in self.fetch_candles_history(symbol, timeframe, since, until)]
+            finally:
+                http = getattr(self, "_http", None)
+                if http is not None:
+                    await http.close()
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_collect())
+        raise RuntimeError(
+            "fetch_candles_history_sync called inside a running event loop; "
+            "async-iterate fetch_candles_history() instead"
+        )
+
+    def _drop_open_bars(self, candles: list[Candle], timeframe: str) -> list[Candle]:
+        now_ms = int(time.time() * 1000)
+        span = TIMEFRAME_MS[timeframe]
+        return [c for c in candles if c.timestamp + span <= now_ms]
+
+    def _fresh_page(self, page: list[Candle], prev: set[int], since: int, until: int | None) -> list[Candle]:
+        """In-range bars not on the previous page, ascending. Dedup is that page only."""
+        seen: set[int] = set()
+        fresh: list[Candle] = []
+        for candle in page:
+            ts = candle.timestamp
+            if ts in prev or ts in seen or ts < since or (until is not None and ts > until):
+                continue
+            seen.add(ts)
+            fresh.append(candle)
+        fresh.sort(key=lambda c: c.timestamp)
+        return fresh
+
+    async def _load_candle_page(
+        self,
+        native: str,
+        timeframe: str,
+        *,
+        since: int | None,
+        until: int | None,
+        limit: int,
+        retry: bool,
+    ) -> list[Candle]:
+        if not retry:
+            return await self._fetch_candles_page(native, timeframe, since=since, until=until, limit=limit)
+        last: RateLimitError | None = None
+        for attempt in range(_HISTORY_ATTEMPTS):
+            try:
+                return await self._fetch_candles_page(native, timeframe, since=since, until=until, limit=limit)
+            except RateLimitError as err:
+                last = err
+                if attempt == _HISTORY_ATTEMPTS - 1:
+                    break
+                wait = err.retry_after if err.retry_after is not None else float(2**attempt)
+                await asyncio.sleep(wait)
+        assert last is not None
+        raise last
 
     async def _walk_forward(
         self,
-        out: dict[int, Candle],
         native: str,
         timeframe: str,
         *,
         since: int,
         until: int | None,
         limit: int | None,
-    ) -> None:
-        """Page a ``candle_paging = "forward"`` venue: the cursor is ``since`` and walks
-        *up*, to one millisecond past the newest bar of the page just served."""
+        retry: bool = False,
+    ) -> AsyncIterator[list[Candle]]:
+        """Page a ``candle_paging = "forward"`` venue, yielding each page before the next request.
+
+        The cursor is ``since`` and walks *up*, to one millisecond past the newest bar
+        of the page just served. Dedup is the previous page's timestamps only.
+        """
         cursor = since
+        prev: set[int] = set()
+        kept = 0
         while True:
-            page = await self._fetch_candles_page(
-                native, timeframe, since=cursor, until=until, limit=self.candle_page_limit
+            page = await self._load_candle_page(
+                native, timeframe, since=cursor, until=until, limit=self.candle_page_limit, retry=retry
             )
             if not page:
                 return
-            new = self._keep(page, out, since, until)
-            if not new:
-                # No timestamp we did not already hold: end of data, or the venue
-                # re-served a page we already have. Either way the walk is over.
+            fresh = self._fresh_page(page, prev, since, until)
+            prev = {c.timestamp for c in page}
+            if not fresh:
+                # No timestamp the previous page did not already hold: end of data,
+                # or the venue re-served a page we already have.
                 return
-            for c in new:
-                out[c.timestamp] = c
+            yield fresh
+            kept += len(fresh)
             newest = max(c.timestamp for c in page)
             if until is not None and newest >= until:
                 return
-            if limit is not None and len(out) >= limit:
+            if limit is not None and kept >= limit:
                 return
             cursor = newest + 1
 
     async def _walk_backward(
         self,
-        out: dict[int, Candle],
         native: str,
         timeframe: str,
         *,
         since: int,
         until: int | None,
         limit: int | None,
-    ) -> None:
-        """Page a ``candle_paging = "backward"`` venue: the cursor is ``until`` and walks
-        *down* from the upper bound (or the venue's "now") to ``since``.
+        retry: bool = False,
+    ) -> AsyncIterator[list[Candle]]:
+        """Page a ``candle_paging = "backward"`` venue, yielding each page before the next request.
+
+        The cursor is ``until`` and walks *down* from the upper bound (or the venue's
+        "now") to ``since``. Dedup is the previous page's timestamps only.
 
         With a ``limit`` the upper bound is pulled in to ``since + limit * timeframe``:
         the caller asked for the ``limit`` **oldest** bars from ``since``, so anchoring
@@ -258,19 +392,21 @@ class BaseExchange(ABC):
             bound = since + limit * span
             upper = bound if until is None else min(until, bound)
         cursor = upper
+        prev: set[int] = set()
         while True:
-            page = await self._fetch_candles_page(
-                native, timeframe, since=None, until=cursor, limit=self.candle_page_limit
+            page = await self._load_candle_page(
+                native, timeframe, since=None, until=cursor, limit=self.candle_page_limit, retry=retry
             )
             if not page:
                 return
-            new = self._keep(page, out, since, until)
-            for c in new:
-                out[c.timestamp] = c
+            fresh = self._fresh_page(page, prev, since, until)
+            prev = {c.timestamp for c in page}
             oldest = min(c.timestamp for c in page)
+            if fresh:
+                yield fresh
             if oldest <= since:
                 return  # walked past the lower bound
-            if not new:
+            if not fresh:
                 # Nothing new: the venue ignored the cursor and re-served a page we
                 # already hold. Stop rather than request it forever.
                 return

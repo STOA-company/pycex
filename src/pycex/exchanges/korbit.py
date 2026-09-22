@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 
 from pycex.auth import korbit_sign, timestamp_ms
 from pycex.base import BaseExchange
-from pycex.constants import KORBIT_BASE
+from pycex.constants import CANDLE_VENUES, KORBIT_BASE
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
@@ -62,12 +62,12 @@ class Korbit(BaseExchange):
     """Korbit v2 spot exchange — no sandbox, spot only."""
 
     name = "korbit"
-    candle_page_limit = 200
+    candle_page_limit = CANDLE_VENUES["korbit"].page_limit
     # `start` is honoured as a floor but the page is the newest `limit` bars inside
     # [start, end], not the oldest. Live probe 2026-08-30, 1d bars, since = now-400d,
     # limit 200 -> 2026-02-11..2026-08-29 (the newest slice). `end` is the real cursor.
-    candle_paging = "backward"
-    supported_timeframes = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+    candle_paging = CANDLE_VENUES["korbit"].paging
+    supported_timeframes = CANDLE_VENUES["korbit"].timeframes
 
     def __init__(
         self,

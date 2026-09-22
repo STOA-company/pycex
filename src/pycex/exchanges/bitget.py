@@ -105,7 +105,7 @@ from urllib.parse import urlencode
 
 from pycex.auth import bitget_headers
 from pycex.base import BaseExchange
-from pycex.constants import BITGET_BASE, BITGET_BROKER_ID, QUOTE_SUFFIXES
+from pycex.constants import BITGET_BASE, BITGET_BROKER_ID, CANDLE_VENUES, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
@@ -119,7 +119,7 @@ from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market
+from pycex.models.market import Market, parse_listing_time
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -215,14 +215,15 @@ class Bitget(BaseExchange):
     """
 
     name = "bitget"
-    candle_page_limit = 200
+    candle_page_limit = CANDLE_VENUES["bitget"].page_limit
+    supported_timeframes = CANDLE_VENUES["bitget"].timeframes
     # `startTime` is only a floor on both market types: the page served is the NEWEST
     # `limit` bars at or before `endTime` (live probe 2026-08-30: spot 1d, since =
     # now-400d -> 2026-02-12..2026-08-30). On mix, sending both bounds over a wide
     # window is a hard error ("startTime and endTime interval cannot be greater than
     # 90 days"), which a backward walk never triggers because it only ever sends
     # `endTime`.
-    candle_paging = "backward"
+    candle_paging = CANDLE_VENUES["bitget"].paging
 
     def __init__(
         self,
@@ -645,6 +646,7 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         qty_precision = d.get("quantityPrecision")
         amount_step = 10 ** -int(qty_precision) if qty_precision not in (None, "") else None
         active = d.get("status") == "online"
+    listed_at = parse_listing_time(d.get("launchTime")) or parse_listing_time(d.get("onlineTime"))
     return Market(
         symbol=symbol,
         native=native,
@@ -655,6 +657,7 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market:
         amount_step=amount_step,
         min_notional=min_notional,
         active=active,
+        listed_at=listed_at,
         raw=d,
     )
 

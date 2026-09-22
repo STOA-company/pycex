@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-22
+
+### Added
+
+- `fetch_candles(..., closed_only=True)` drops a bar that has not ended
+  (`timestamp + timeframe_ms <= now_ms`). `Candle.timestamp` stays the bar
+  open on every adapter.
+- `Market.listed_at` — venue listing time when the exchange publishes one
+  (OKX `listTime`, Binance linear `onboardDate`, Bitget `launchTime` /
+  `onlineTime`, Bybit `launchTime`). Otherwise `None`.
+- `fetch_candles_history(symbol, timeframe, since, until=None)` async
+  generator and `fetch_candles_history_sync` list twin. Pages at
+  `CANDLE_VENUES` limits, stops on an empty page, and when `until` is omitted
+  stops at the last closed bar. `RateLimitError` backs off on `retry_after`
+  (or 1, 2, 4, 8, 16 seconds) at most five times. Other methods still do not
+  retry.
+- `CANDLE_VENUES` in `pycex.constants` is the page-limit, paging-direction,
+  bar-open, and timeframe table. An unsupported timeframe raises
+  `NotSupportedError`.
+
 ## [0.3.0] - 2026-09-10
 
 Hardening pass on the OKX adapter, driven by six **real-money OKX runs** on
