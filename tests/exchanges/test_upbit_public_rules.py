@@ -6,7 +6,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from pycex.exchanges.bithumb import Bithumb
-from pycex.exchanges.upbit import Upbit
+from pycex.exchanges.upbit import _KRW_TICK_LADDER, Upbit
 from pycex.models.market import tick_for_price, tick_ladder
 from tests.conftest import load_fixture
 
@@ -74,9 +74,11 @@ async def test_bithumb_does_not_inherit_upbit_rules(httpx_mock: HTTPXMock) -> No
         markets = await exchange.fetch_markets()
     for market, row in zip(markets, rows):
         assert market.raw == row
-        assert market.amount_step is None
-        assert market.min_notional is None
-        assert market.public_rules == {}
+        rules = market.public_rules
+        # Bithumb carries its own official policy (tests/exchanges/test_bithumb_public_rules.py), not Upbit's.
+        assert "upbit" not in " ".join(str(v) for k, v in rules.items() if k.endswith("_source"))
+        assert rules["amount_step_scope"] != "market_buy_fill"
+        assert rules["price_tick_ladder"] != [{"min_price": f, "tick": t} for f, t in _KRW_TICK_LADDER]
 
 
 async def test_empty_markets(httpx_mock: HTTPXMock) -> None:
