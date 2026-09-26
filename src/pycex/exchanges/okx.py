@@ -78,6 +78,7 @@ from pycex.constants import (
 )
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InvalidOrderError,
     NotSupportedError,
@@ -792,6 +793,9 @@ def _map_error(code: str, msg: str) -> PyCexError:
         return OrderNotFoundError(msg, code=code, exchange="okx")
     if code == "50011":
         return RateLimitError(msg, code=code, exchange="okx")
+    if code == "51016":
+        # "Client order ID already exists." — https://www.okx.com/docs-v5/en/#error-code-rest-api-trade
+        return DuplicateOrderError(msg, code=code, exchange="okx")
     return ExchangeError(msg, code=code, exchange="okx")
 
 

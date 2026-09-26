@@ -18,6 +18,7 @@ from pycex.constants import (
 )
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
@@ -78,6 +79,7 @@ __all__ = [
     "RateLimitError",
     "InsufficientBalanceError",
     "InvalidOrderError",
+    "DuplicateOrderError",
     "OrderNotFoundError",
     "SettlementPendingError",
     "NetworkError",

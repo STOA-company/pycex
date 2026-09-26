@@ -280,4 +280,12 @@ def _parse_upbit_order(symbol: str, data: dict[str, Any]) -> Order:
 
 
 def _map_error(status: int, data: dict[str, Any]) -> PyCexError | None:
-    return map_krw_error(status, data, exchange="upbit", auth_names=_AUTH_NAMES, rate_limit_names=_RATE_LIMIT_NAMES)
+    return map_krw_error(
+        status,
+        data,
+        exchange="upbit",
+        auth_names=_AUTH_NAMES,
+        rate_limit_names=_RATE_LIMIT_NAMES,
+        # `duplicated_identifier` (400): https://docs.upbit.com/kr/reference/rest-api-guide
+        duplicate_order_names=frozenset({"duplicated_identifier"}),
+    )

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from pycex.constants import TIMEFRAME_MS
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InsufficientBalanceError,
     OrderNotFoundError,
@@ -192,6 +193,7 @@ def map_krw_error(
     exchange: str,
     auth_names: frozenset[str],
     rate_limit_names: frozenset[str] = frozenset(),
+    duplicate_order_names: frozenset[str] = frozenset(),
 ) -> PyCexError | None:
     """Map a ``{"error": {"name", "message"}}`` body to a ``PyCexError``.
 
@@ -225,6 +227,8 @@ def map_krw_error(
         return AuthenticationError(message)
     if name == "order_not_found":
         return OrderNotFoundError(message, code=name, exchange=exchange)
+    if name in duplicate_order_names:
+        return DuplicateOrderError(message, code=name, exchange=exchange)
     if name in rate_limit_names:
         # Both exchanges normally signal rate limiting via HTTP 429, which
         # HTTPClient already intercepts and raises RateLimitError for before

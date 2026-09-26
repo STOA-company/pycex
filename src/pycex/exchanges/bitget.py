@@ -109,6 +109,7 @@ from pycex.base import BaseExchange
 from pycex.constants import BITGET_BASE, BITGET_BROKER_ID, CANDLE_VENUES, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
@@ -823,6 +824,8 @@ _AUTH_CODES = frozenset(
 _INSUFFICIENT_BALANCE_CODES = frozenset({"40711", "40712", "40762", "43012"})
 _ORDER_NOT_FOUND_CODES = frozenset({"40109", "40768", "43001"})
 _RATE_LIMIT_CODES = frozenset({"1001"})
+# 40786 "Duplicate clientOid" on place-order: https://bitgetlimited.github.io/apidoc/en/spot/ (Error Code table)
+_DUPLICATE_ORDER_CODES = frozenset({"40786"})
 
 
 def _map_error(code: str, msg: str) -> PyCexError:
@@ -834,6 +837,8 @@ def _map_error(code: str, msg: str) -> PyCexError:
         return OrderNotFoundError(msg, code=code, exchange="bitget")
     if code in _RATE_LIMIT_CODES:
         return RateLimitError(msg, code=code, exchange="bitget")
+    if code in _DUPLICATE_ORDER_CODES:
+        return DuplicateOrderError(msg, code=code, exchange="bitget")
     return ExchangeError(msg, code=code, exchange="bitget")
 
 
