@@ -37,6 +37,7 @@ the previous day)**. Confirmed against a live recording — see
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -66,6 +67,30 @@ _AUTH_NAMES = frozenset({"jwt_verification", "invalid_jwt", "expired_jwt", "NotA
 # (see docstring below) — cap N to bound that fan-out.
 _MY_TRADES_DEFAULT_LIMIT = 20
 _MY_TRADES_MAX_LIMIT = 50
+
+# `client_order_id`: apidocs.bithumb.com/reference/주문-요청 (POST /v2/orders body) and .../개별-주문-조회
+# (GET /v1/order query) — "허용 문자: 영문 대/소문자, 숫자, -, _ / 길이: 1–36자". The docs state no reuse rule.
+_CLIENT_ORDER_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,36}")
+
+# KRW-market rules, 원화 마켓 거래 정책 안내 (support.bithumb.com/hc/ko/articles/51036972377241, updated
+# 2026-08-11): 최소 주문금액 5,000원, 최소 주문수량 단위 0.00000001, and the price-tier 호가단위 below
+# as (min_price inclusive — "N원 이상 ~ M원 미만", tick).
+_KRW_POLICY_URL = "https://support.bithumb.com/hc/ko/articles/51036972377241"
+_KRW_MIN_NOTIONAL = "5000"
+_KRW_AMOUNT_STEP = "0.00000001"
+_KRW_TICK_LADDER = (
+    ("0", "0.0001"),
+    ("1", "0.001"),
+    ("10", "0.01"),
+    ("100", "1"),
+    ("1000", "1"),
+    ("5000", "5"),
+    ("10000", "10"),
+    ("50000", "50"),
+    ("100000", "100"),
+    ("500000", "500"),
+    ("1000000", "1000"),
+)
 
 
 class Bithumb(KrwV1Mixin, BaseExchange):
@@ -121,6 +146,40 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         """
         return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(_KST).strftime("%Y-%m-%dT%H:%M:%S")
 
+    async def fetch_markets(self) -> list[Market]:
+        """Include the documented KRW policy rules without an authenticated request.
+
+        Same ``public_rules`` keys as :class:`pycex.exchanges.upbit.Upbit`. The
+        policy page publishes one 최소 주문수량 단위 for every KRW market, so
+        ``amount_step`` is set (``amount_step_scope="order_quantity"``: limit
+        volume and market-sell volume; a market buy spends a KRW total). The
+        page does not say whether an off-step quantity is rejected or rounded,
+        nor a separate minimum quantity, so ``amount_rounding`` and
+        ``min_quantity`` stay ``None``. BTC-quote markets have no published
+        rules here and keep ``public_rules == {}``.
+        """
+        markets = await super().fetch_markets()
+        for market in markets:
+            if market.quote == "KRW":
+                market.min_notional = float(_KRW_MIN_NOTIONAL)
+                market.amount_step = float(_KRW_AMOUNT_STEP)
+                market.public_rules = {
+                    "amount_step": _KRW_AMOUNT_STEP,
+                    "amount_unit": market.base,
+                    "amount_step_scope": "order_quantity",
+                    "amount_rounding": None,
+                    "min_quantity": None,
+                    "min_notional": _KRW_MIN_NOTIONAL,
+                    "notional_unit": "KRW",
+                    "amount_step_source": _KRW_POLICY_URL,
+                    "min_notional_source": _KRW_POLICY_URL,
+                    "verified_on": "2026-09-26",
+                    "price_tick_ladder": [{"min_price": floor, "tick": tick} for floor, tick in _KRW_TICK_LADDER],
+                    "price_tick_ladder_source": _KRW_POLICY_URL,
+                    "price_tick_ladder_verified_on": "2026-09-26",
+                }
+        return markets
+
     # ── Account ──
 
     async def fetch_balance(self) -> Balance:
@@ -155,9 +214,13 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         exactly what the caller passed in (``price`` forced to ``None`` for
         market orders) rather than whatever Bithumb's response happens to
         contain — see ``raw`` for the actual response.
+
+        ``client_order_id`` is sent as the v2 ``client_order_id`` body field
+        (1-36 characters of ``A-Za-z0-9_-``; anything else raises
+        ``InvalidOrderError`` before any request).
         """
-        if client_order_id is not None:
-            raise NotSupportedError("This adapter does not support client_order_id")
+        if client_order_id is not None and not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
+            raise InvalidOrderError("client_order_id must be 1-36 characters of A-Z a-z 0-9 - _", exchange="bithumb")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -175,11 +238,14 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         else:
             body["order_type"] = "market"
             body["volume"] = str(amount)
+        if client_order_id is not None:
+            body["client_order_id"] = client_order_id
         async with self._rate_limiter.request("order"):
             data = self._check(await self._http.post("/v2/orders", data=body, headers=self._headers(body)))
-        parsed = _parse_order(symbol, _normalize_order_fields(data))
+        parsed = _parse_bithumb_order(symbol, data)
         return parsed.model_copy(
             update={
+                "client_order_id": parsed.client_order_id or client_order_id,
                 "side": canonical_side,
                 "type": canonical_type,
                 "amount": amount,
@@ -200,16 +266,17 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         params = {"order_id": order_id}
         async with self._rate_limiter.request("order"):
             data = self._check(await self._http.delete("/v2/order", params=params, headers=self._headers(params)))
-        order = _parse_order(symbol, _normalize_order_fields(data))
+        order = _parse_bithumb_order(symbol, data)
         return order.model_copy(update={"status": "cancel"})
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
-        if client_order_id is not None or order_id is None:
-            raise NotSupportedError("This adapter requires an exchange order ID")
-        params = {"uuid": order_id}
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="bithumb")
+        # The docs do not say which key wins when both are sent, so exactly one is enforced above.
+        params = {"client_order_id": client_order_id} if client_order_id else {"uuid": order_id}
         async with self._rate_limiter.request("query"):
             data = self._check(await self._http.get("/v1/order", params=params, headers=self._headers(params)))
-        return _parse_order(symbol, data)
+        return _parse_bithumb_order(symbol, data)
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         params: dict[str, Any] = {"state": "wait"}
@@ -218,7 +285,7 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         async with self._rate_limiter.request("query"):
             data = self._check(await self._http.get("/v2/orders/pending", params=params, headers=self._headers(params)))
         orders = data.get("data", [])
-        return [_parse_order(self.from_native(o.get("market", "")), _normalize_order_fields(o)) for o in orders]
+        return [_parse_bithumb_order(self.from_native(o.get("market", "")), o) for o in orders]
 
     async def fetch_my_trades(
         self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
@@ -278,6 +345,13 @@ class Bithumb(KrwV1Mixin, BaseExchange):
 
 def _map_error(status: int, data: dict[str, Any]) -> PyCexError | None:
     return map_krw_error(status, data, exchange="bithumb", auth_names=_AUTH_NAMES)
+
+
+def _parse_bithumb_order(symbol: str, data: dict[str, Any]) -> Order:
+    """Shared KRW order parse (v2 field names normalized) plus Bithumb's ``client_order_id`` echo."""
+    return _parse_order(symbol, _normalize_order_fields(data)).model_copy(
+        update={"client_order_id": data.get("client_order_id") or None}
+    )
 
 
 # ── v2 -> v1 field-name normalization ──
