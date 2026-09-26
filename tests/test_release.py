@@ -16,7 +16,7 @@ import re
 import pycex
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 
 def test_package_version() -> None:
