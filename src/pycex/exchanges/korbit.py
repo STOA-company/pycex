@@ -30,6 +30,7 @@ from pycex.base import BaseExchange
 from pycex.constants import CANDLE_VENUES, KORBIT_BASE
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
@@ -510,6 +511,9 @@ def _map_error(status: int, data: dict[str, Any]) -> PyCexError | None:
         return InsufficientBalanceError(message, code=message, exchange="korbit")
     if message in _ORDER_NOT_FOUND_MESSAGES:
         return OrderNotFoundError(message, code=message, exchange="korbit")
+    if message == "DUPLICATE_CLIENT_ORDER_ID":
+        # https://docs.digitalx.miraeasset.com/llms/en/rest_api/trading.md (POST /v2/orders, Error Code)
+        return DuplicateOrderError(message, code=message, exchange="korbit")
     if message == "EXCEED_TIME_WINDOW":
         return AuthenticationError(message)
     if message == "INVALID_CURRENCY_PAIR":

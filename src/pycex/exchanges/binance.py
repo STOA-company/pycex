@@ -71,6 +71,7 @@ from pycex.constants import (
 )
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
@@ -553,7 +554,14 @@ _ORDER_NOT_FOUND_CODES = frozenset({"-2013"})
 _RATE_LIMIT_CODES = frozenset({"-1003"})
 
 
+# -2010 NEW_ORDER_REJECTED is shared: "Duplicate order sent." means the clientOrderId is already in use
+# (https://developers.binance.com/docs/binance-spot-api-docs/errors), so the message decides, not the code.
+_DUPLICATE_ORDER_MSG = "duplicate order sent"
+
+
 def _map_error(code: str, msg: str) -> PyCexError:
+    if code == "-2010" and _DUPLICATE_ORDER_MSG in msg.lower():
+        return DuplicateOrderError(msg, code=code, exchange="binance")
     if code in _INSUFFICIENT_BALANCE_CODES:
         return InsufficientBalanceError(msg, code=code, exchange="binance")
     if code in _AUTH_CODES:

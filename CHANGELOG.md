@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `DuplicateOrderError` (an `ExchangeError`, **not** an `InvalidOrderError`): the venue refused a
+  `client_order_id` it has already seen, so an order with that id may already exist — reconcile by
+  querying it, never resubmit. Mapped only from documented codes: OKX `51016`, Binance `-2010`
+  with "Duplicate order sent." (other `-2010` messages stay insufficient balance), Bitget `40786`,
+  Upbit `duplicated_identifier`, Korbit `DUPLICATE_CLIENT_ORDER_ID`. Bithumb documents no such
+  error, so it is unchanged. All other mappings are unchanged.
 - `fetch_markets(*, symbols=None)` (and `fetch_markets_sync`) on every venue: an optional
   sequence of canonical symbols that narrows the returned list. `None` keeps today's
   behavior; a bare string raises `TypeError`; unlisted symbols are just absent. The

@@ -65,6 +65,17 @@ class InvalidOrderError(ExchangeError):
     """Order parameters are invalid."""
 
 
+class DuplicateOrderError(ExchangeError):
+    """The exchange refused a ``client_order_id`` it has already seen.
+
+    A same-id order may already exist on the exchange — reconcile by querying
+    it (``fetch_order(..., client_order_id=)``), never resubmit. It is
+    deliberately **not** an :class:`InvalidOrderError`: the request was not
+    wrong, the exchange is telling you the first attempt landed, so treating it
+    as a definite rejection would record a live order as rejected.
+    """
+
+
 class OrderNotFoundError(ExchangeError):
     """Order was not found."""
 
