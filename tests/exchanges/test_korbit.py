@@ -13,6 +13,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    InvalidOrderError,
     NotSupportedError,
     OrderNotFoundError,
     SymbolNotFoundError,
@@ -133,14 +134,28 @@ async def test_fetch_ticker(httpx_mock: HTTPXMock) -> None:
 
 
 async def test_fetch_markets(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(json=load_fixture("korbit", "markets"))
+    httpx_mock.add_response(url="https://api.korbit.co.kr/v2/currencyPairs", json=load_fixture("korbit", "markets"))
+    for native in ("algo_krw", "ens_krw"):  # launched KRW only; kda_krw is stopped
+        httpx_mock.add_response(
+            url=f"https://api.korbit.co.kr/v2/tickSizePolicy?symbol={native}",
+            json=_policy_response(native),
+        )
     ex = Korbit()
     markets = await ex.fetch_markets()
-    req = httpx_mock.get_request()
-    assert req.url.path == "/v2/currencyPairs"
     assert len(markets) == 3
     assert {m.symbol for m in markets} == {"ALGO/KRW", "ENS/KRW", "KDA/KRW"}
+    assert sorted(r.url.params["symbol"] for r in httpx_mock.get_requests() if r.url.path == "/v2/tickSizePolicy") == [
+        "algo_krw",
+        "ens_krw",
+    ]
     await ex.close()
+
+
+def _policy_response(native: str) -> dict:
+    """The official example recording, re-labelled for ``native`` (same tiers)."""
+    body = load_fixture("korbit", "tick_size_policy_xrp_krw")
+    body["data"][0]["symbol"] = native
+    return body
 
 
 def test_parse_public_trade_isbuyertaker_true_is_buy() -> None:
@@ -451,4 +466,104 @@ async def test_success_false_on_http_200_is_mapped(httpx_mock: HTTPXMock) -> Non
     ex = Korbit(api_key="k", secret=SECRET)
     with pytest.raises(InsufficientBalanceError):
         await ex.fetch_balance()
+    await ex.close()
+
+
+# ── client_order_id: POST/GET /v2/orders `clientOrderId`, regex [0-9a-zA-Z.:_-]{1,36} (docs trading.md) ──
+
+CID = "qtx-0123456789abcdef.:_-ABCDEF01"  # 33 chars, every allowed character class
+
+
+async def test_create_order_sends_signed_client_order_id_and_echoes_it(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json={"success": True, "data": {"orderId": 200}})
+    ex = Korbit(api_key="k", secret=SECRET)
+    order = await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=CID)
+    req = httpx_mock.get_request()
+    fields = dict(parse_qsl(req.content.decode()))
+    assert fields["clientOrderId"] == CID
+    _assert_valid_form_signature(req.content)  # clientOrderId is inside the signed string
+    assert order.id == "200" and order.client_order_id == CID
+    await ex.close()
+
+
+async def test_create_order_without_client_order_id_sends_no_key(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json={"success": True, "data": {"orderId": 201}})
+    ex = Korbit(api_key="k", secret=SECRET)
+    order = await ex.create_order("BTC/KRW", "sell", "market", 0.02)
+    assert "clientOrderId" not in httpx_mock.get_request().content.decode()
+    assert order.client_order_id is None
+    await ex.close()
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 37, "has space", "slash/no", "한글"])
+async def test_create_order_rejects_invalid_client_order_id_without_request(httpx_mock: HTTPXMock, bad: str) -> None:
+    ex = Korbit(api_key="k", secret=SECRET)
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=bad)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+async def test_create_order_accepts_36_char_client_order_id(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json={"success": True, "data": {"orderId": 202}})
+    ex = Korbit(api_key="k", secret=SECRET)
+    await ex.create_order("BTC/KRW", "buy", "market", 10_000, client_order_id="x" * 36)
+    assert dict(parse_qsl(httpx_mock.get_request().content.decode()))["clientOrderId"] == "x" * 36
+    await ex.close()
+
+
+async def test_fetch_order_by_client_order_id(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "success": True,
+            "data": {
+                "orderId": 200,
+                "clientOrderId": CID,
+                "symbol": "btc_krw",
+                "orderType": "limit",
+                "side": "buy",
+                "qty": "0.01",
+                "price": "50000000",
+                "status": "filled",
+                "createdAt": 1788015600000,
+            },
+        }
+    )
+    ex = Korbit(api_key="k", secret=SECRET)
+    order = await ex.fetch_order(None, "BTC/KRW", client_order_id=CID)
+    req = httpx_mock.get_request()
+    assert req.url.path == "/v2/orders"
+    assert req.url.params["clientOrderId"] == CID and "orderId" not in req.url.params
+    _assert_valid_query_signature(req.url.query.decode())
+    assert order.id == "200" and order.client_order_id == CID
+    await ex.close()
+
+
+async def test_fetch_order_by_order_id_still_sends_order_id_only(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"success": True, "data": {"orderId": 200, "symbol": "btc_krw"}})
+    ex = Korbit(api_key="k", secret=SECRET)
+    order = await ex.fetch_order("200", "BTC/KRW")
+    params = httpx_mock.get_request().url.params
+    assert params["orderId"] == "200" and "clientOrderId" not in params
+    assert order.client_order_id is None
+    await ex.close()
+
+
+@pytest.mark.parametrize(("order_id", "client_id"), [(None, None), ("", ""), ("200", CID)])
+async def test_fetch_order_requires_exactly_one_key_without_request(
+    httpx_mock: HTTPXMock, order_id: str | None, client_id: str | None
+) -> None:
+    ex = Korbit(api_key="k", secret=SECRET)
+    with pytest.raises(InvalidOrderError):
+        await ex.fetch_order(order_id, "BTC/KRW", client_order_id=client_id)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+async def test_open_orders_echo_client_order_id(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={"success": True, "data": [{"orderId": 200, "clientOrderId": CID, "symbol": "btc_krw"}]}
+    )
+    ex = Korbit(api_key="k", secret=SECRET)
+    assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
     await ex.close()

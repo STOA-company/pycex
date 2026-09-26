@@ -19,6 +19,8 @@ require a 4xx status), since :class:`pycex.http.HTTPClient` only consults its
 
 from __future__ import annotations
 
+import asyncio
+import re
 from typing import Any
 from urllib.parse import urlencode
 
@@ -38,7 +40,7 @@ from pycex.exceptions import (
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
-from pycex.models.market import Market
+from pycex.models.market import Market, tick_ladder
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -56,6 +58,13 @@ _INTERVAL = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "
 _ORDER_NOT_FOUND_MESSAGES = frozenset(
     {"ORDER_NOT_FOUND", "ORDER_ALREADY_CANCELED", "ORDER_ALREADY_EXPIRED", "ORDER_ALREADY_FILLED"}
 )
+
+# `clientOrderId`: docs.digitalx.miraeasset.com/llms/en/rest_api/trading.md (POST /v2/orders) — only
+# `[0-9a-zA-Z.:_-]{1,36}` is accepted; the same id sent twice is processed once (DUPLICATE_CLIENT_ORDER_ID).
+_CLIENT_ORDER_ID_RE = re.compile(r"[0-9a-zA-Z.:_-]{1,36}")
+
+_RULES_SOURCE = "https://docs.digitalx.miraeasset.com/llms/en/rest_api/quotation.md"
+_RULES_VERIFIED_ON = "2026-09-26"
 
 
 class Korbit(BaseExchange):
@@ -179,11 +188,40 @@ class Korbit(BaseExchange):
         return [_parse_public_trade(symbol, t) for t in _unwrap(data)]
 
     async def fetch_markets(self) -> list[Market]:
+        """Trading pairs; launched KRW markets also get ``public_rules`` (same keys as Upbit's).
+
+        ``price_tick_ladder`` is read from the public ``GET /v2/tickSizePolicy`` (one call per
+        market — the endpoint requires ``symbol``), not hard-coded, so it follows the venue.
+        A market whose policy call fails or is malformed simply gets no ladder. Korbit publishes
+        no order-quantity step (``amount_step`` stays ``None``), only ``minOrderValue``.
+        """
         async with self._rate_limiter.request("query"):
             data = await self._http.get("/v2/currencyPairs")
         markets = [_parse_market(m) for m in _unwrap(data)]
+        krw = [m for m in markets if m.quote == "KRW" and m.active]
+        ladders = await asyncio.gather(*(self._fetch_tick_ladder(m.native) for m in krw))
+        for market, ladder in zip(krw, ladders):
+            market.public_rules = _krw_rules(market, ladder)
         self._markets = {m.native: m for m in markets}
         return markets
+
+    async def _fetch_tick_ladder(self, native: str) -> list[dict[str, str]] | None:
+        try:
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get("/v2/tickSizePolicy", params={"symbol": native})
+            rows = _unwrap(data)
+        except PyCexError:
+            return None
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and row.get("symbol") == native:
+                tiers = row.get("tickSizePolicy")
+                if isinstance(tiers, list):
+                    return [
+                        {"min_price": str(t.get("priceGte")), "tick": str(t.get("tickSize"))}
+                        for t in tiers
+                        if isinstance(t, dict)
+                    ]
+        return None
 
     # ── Account ──
 
@@ -221,8 +259,8 @@ class Korbit(BaseExchange):
         echoes exactly what the caller passed in (``id`` comes from the response,
         which for ``POST /v2/orders`` is only ``{"orderId": ...}`` — see ``raw``).
         """
-        if client_order_id is not None:
-            raise NotSupportedError("This adapter does not support client_order_id")
+        if client_order_id is not None and not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
+            raise InvalidOrderError("client_order_id must match [0-9a-zA-Z.:_-]{1,36}", exchange="korbit")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -236,6 +274,8 @@ class Korbit(BaseExchange):
             params["amt"] = str(amount)
         else:
             params["qty"] = str(amount)
+        if client_order_id is not None:
+            params["clientOrderId"] = client_order_id
         async with self._rate_limiter.request("order"):
             body = self._signed_form_body(params)
             data = await self._http.post_form("/v2/orders", data=body, headers=self._headers())
@@ -248,6 +288,7 @@ class Korbit(BaseExchange):
             type=canonical_type,
             amount=amount,
             price=price if canonical_type == "limit" else None,
+            client_order_id=client_order_id,
             raw=data,
         )
 
@@ -260,11 +301,12 @@ class Korbit(BaseExchange):
         return Order(id=str(order_id), symbol=symbol, side="", type="", amount=0.0, raw=_unwrap(data) or {})
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
-        if client_order_id is not None or order_id is None:
-            raise NotSupportedError("This adapter requires an exchange order ID")
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="korbit")
         native = self.to_native(symbol)
+        key = {"clientOrderId": client_order_id} if client_order_id else {"orderId": order_id}
         async with self._rate_limiter.request("query"):
-            path = self._signed_query_path("/v2/orders", {"symbol": native, "orderId": order_id})
+            path = self._signed_query_path("/v2/orders", {"symbol": native, **key})
             data = await self._http.get(path, headers=self._headers())
         return _parse_order(symbol, _unwrap(data))
 
@@ -360,6 +402,32 @@ def _parse_market(d: dict[str, Any]) -> Market:
     )
 
 
+def _krw_rules(market: Market, ladder: list[dict[str, str]] | None) -> dict[str, Any]:
+    """Document-derived KRW rules, same keys/units as Upbit's ``public_rules`` (values are exact strings)."""
+    min_notional = market.raw.get("minOrderValue")
+    max_notional = market.raw.get("maxOrderValue")
+    rules: dict[str, Any] = {
+        "amount_step": None,  # Korbit publishes no order-quantity step
+        "min_notional": str(min_notional) if min_notional else None,
+        "max_notional": str(max_notional) if max_notional else None,
+        "min_quantity": None,
+        "amount_unit": market.base,
+        "notional_unit": market.quote,
+        "min_notional_source": f"{_RULES_SOURCE}#get-_v2_currencyPairs",
+        "verified_on": _RULES_VERIFIED_ON,
+    }
+    if ladder:
+        candidate = market.model_copy(update={"public_rules": {"price_tick_ladder": ladder}})
+        try:
+            tick_ladder(candidate)  # rejects malformed/duplicate tiers
+        except ValueError:
+            return rules
+        rules["price_tick_ladder"] = ladder
+        rules["price_tick_ladder_source"] = f"{_RULES_SOURCE}#get-_v2_tickSizePolicy"
+        rules["price_tick_ladder_verified_on"] = _RULES_VERIFIED_ON
+    return rules
+
+
 def _parse_ticker(symbol: str, d: dict[str, Any]) -> Ticker:
     return Ticker(
         symbol=symbol,
@@ -400,6 +468,7 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     price = d.get("price")
     return Order(
         id=str(d.get("orderId", "")),
+        client_order_id=d.get("clientOrderId") or None,
         symbol=symbol,
         side=str(d.get("side", "")).lower(),
         type=str(d.get("orderType", "")).lower(),
