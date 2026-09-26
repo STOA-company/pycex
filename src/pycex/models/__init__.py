@@ -3,7 +3,7 @@
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market
+from pycex.models.market import Market, tick_for_price, tick_ladder
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -24,4 +24,6 @@ __all__ = [
     "Position",
     "Ticker",
     "Trade",
+    "tick_for_price",
+    "tick_ladder",
 ]

@@ -44,6 +44,8 @@ from pycex.models import (
     Position,
     Ticker,
     Trade,
+    tick_for_price,
+    tick_ladder,
 )
 from pycex.symbols import parse_symbol
 
@@ -93,6 +95,8 @@ __all__ = [
     "Position",
     "Ticker",
     "Trade",
+    "tick_for_price",
+    "tick_ladder",
     "create_exchange",
     "parse_symbol",
 ]

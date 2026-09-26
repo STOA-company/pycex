@@ -339,6 +339,28 @@ with Binance() as ex:
 | `raw` | `dict` | Original exchange response |
 | `public_rules` | `dict` | Document-derived exact values, units, scope and sources; empty when not supplied |
 
+### Price tick ladder
+
+Venues whose tick depends on the price tier (KRW markets) cannot be described by
+the scalar `price_tick`. The tiers go in `public_rules["price_tick_ladder"]`, a
+list of `{"min_price": "<decimal>", "tick": "<decimal>"}` in exact decimal
+strings (the same convention as the other `public_rules` values). `min_price` is
+**inclusive**: a price exactly on a floor uses that tier, anything below it the
+tier before.
+
+```python
+from pycex.models import tick_for_price, tick_ladder
+
+tick_for_price(market, "2000000")   # Decimal | None
+tick_ladder(market)                 # ((Decimal floor, Decimal tick), ...) ascending, or None
+```
+
+`tick_for_price` returns the scalar `price_tick` (as `Decimal`) when the market
+has no ladder, and `None` when it has neither. It raises `ValueError` for a
+non-finite or non-positive price, a price below the first floor, or a malformed
+ladder (missing keys, non-positive tick, duplicate floors). `Market.price_tick`
+is unchanged; no exchange populates a ladder yet.
+
 ## MyTrade
 
 A fill on the caller's own account, returned by `fetch_my_trades()` — distinct
