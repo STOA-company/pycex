@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-26
+
+### Added
+
+- Price-tier tick ladder representation: `Market.public_rules["price_tick_ladder"]`
+  (list of `{"min_price", "tick"}` decimal strings, `min_price` inclusive) and the
+  `tick_for_price(market, price)` / `tick_ladder(market)` helpers in
+  `pycex.models`. Without a ladder `tick_for_price` returns the scalar
+  `price_tick`; `Market.price_tick` itself is unchanged.
+- Upbit: `create_order(..., client_order_id=...)` is sent as `identifier` (1-64
+  characters, unique per account and never reusable per the docs; other
+  lengths raise `InvalidOrderError` before any request) and
+  `fetch_order(None, symbol, client_order_id=...)` looks it up by `identifier`.
+  Exactly one of `order_id`/`client_order_id` is required. The order parsers echo
+  `identifier` as `Order.client_order_id`.
+- Upbit: KRW markets' `public_rules` now carries `price_tick_ladder` (the 17-tier
+  official KRW ladder, post 2025-07-31) in the same dict as the amount rules.
+  BTC/USDT quote markets get none, and no limit-order quantity step is published.
+- Bithumb: `create_order(..., client_order_id=...)` is sent as the v2 `client_order_id`
+  body field (1-36 characters of `A-Za-z0-9_-` per the docs; anything else raises
+  `InvalidOrderError` before any request) and `fetch_order(None, symbol,
+  client_order_id=...)` looks it up via `GET /v1/order?client_order_id=`. Exactly one
+  of `order_id`/`client_order_id` is required. The order parsers echo
+  `client_order_id` as `Order.client_order_id`.
+- Bithumb: `fetch_markets` fills KRW markets' `public_rules` (same keys as Upbit) from the
+  official 원화 마켓 거래 정책 안내: `min_notional` 5,000 KRW, `amount_step` 0.00000001
+  (`Market.min_notional`/`amount_step` set too) and the 11-tier `price_tick_ladder`. The
+  page does not say whether an off-step quantity is rounded or rejected, so
+  `amount_rounding`/`min_quantity` are `None`. BTC-quote markets get no rules.
+- Korbit: `create_order(..., client_order_id=...)` is sent as `clientOrderId`
+  (`[0-9a-zA-Z.:_-]{1,36}` per the docs; other values raise `InvalidOrderError`
+  before any request) and `fetch_order(None, symbol, client_order_id=...)` looks it
+  up by `clientOrderId`. Exactly one of `order_id`/`client_order_id` is required
+  (previously `NotSupportedError`). The order parser echoes `clientOrderId`.
+- Korbit: launched KRW markets' `public_rules` now carries `price_tick_ladder`,
+  read from the public `GET /v2/tickSizePolicy` (one call per market, `fetch_markets`
+  makes 1 + N public requests), plus the Upbit-shaped rule keys (`min_notional`,
+  `max_notional`, units, sources). A market whose policy call fails gets no ladder.
+  Korbit publishes no order-quantity step, so `amount_step` stays `None`.
+
 ## [0.4.2] - 2026-09-26
 
 ### Added
