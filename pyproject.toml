@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pycex"
-version = "0.4.1"
+version = "0.4.2"
 description = "Unified Python wrapper for cryptocurrency exchanges (Binance, Bybit, OKX, Bitget, Upbit, Bithumb, Korbit) — typed, async-first, with MCP server"
 readme = "README.md"
 license = "MIT"

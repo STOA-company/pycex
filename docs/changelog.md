@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-26
+
+### Added
+
+- `client_order_id` contract (#13): `create_order(..., client_order_id=...)` and
+  `fetch_order(order_id, symbol, *, client_order_id=...)` take the caller's
+  idempotency key on the base signature and the sync stubs.
+  - Binance: sent as `newClientOrderId` on create and looked up with
+    `origClientOrderId` on fetch; the order parser echoes `clientOrderId`.
+  - Bitget: `clientOid` on create and fetch; echoed on create and by the mix
+    parser.
+  - OKX: create is unchanged (`clOrdId`); `fetch_order` now looks an order up by
+    `clOrdId`.
+
+### Changed
+
+- `fetch_order`'s `order_id` is `str | None`; pass `client_order_id` instead of
+  it on Binance, Bitget, and OKX.
+- Upbit, Bithumb, Bybit, and Korbit raise `NotSupportedError` when
+  `client_order_id` is given, and their `fetch_order` requires an exchange
+  order ID.
+
 ## [0.4.1] - 2026-09-22
 
 ### Removed
