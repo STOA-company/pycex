@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Price-tier tick ladder representation: `Market.public_rules["price_tick_ladder"]`
+  (list of `{"min_price", "tick"}` decimal strings, `min_price` inclusive) and the
+  `tick_for_price(market, price)` / `tick_ladder(market)` helpers in
+  `pycex.models`. Without a ladder `tick_for_price` returns the scalar
+  `price_tick`; `Market.price_tick` itself is unchanged. No exchange fills a
+  ladder yet.
+
 ## [0.4.2] - 2026-09-26
 
 ### Added
