@@ -824,8 +824,11 @@ _AUTH_CODES = frozenset(
 _INSUFFICIENT_BALANCE_CODES = frozenset({"40711", "40712", "40762", "43012"})
 _ORDER_NOT_FOUND_CODES = frozenset({"40109", "40768", "43001"})
 _RATE_LIMIT_CODES = frozenset({"1001"})
-# 40786 "Duplicate clientOid" on place-order: https://bitgetlimited.github.io/apidoc/en/spot/ (Error Code table)
-_DUPLICATE_ORDER_CODES = frozenset({"40786"})
+# Duplicate client order id, all in the same Error Code table (https://bitgetlimited.github.io/apidoc/en/spot/):
+# 40786 "Duplicate clientOid" (place-order), 40708 "client_oid duplicate", 43118 "clientOrderId duplicate"
+# (also the spot place-order "Duplicate clientOrderId Response" example), 45034 "clientOid duplicate",
+# 50060 "Duplicated clientOid".
+_DUPLICATE_ORDER_CODES = frozenset({"40786", "40708", "43118", "45034", "50060"})
 
 
 def _map_error(code: str, msg: str) -> PyCexError:

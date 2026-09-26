@@ -557,10 +557,14 @@ _RATE_LIMIT_CODES = frozenset({"-1003"})
 # -2010 NEW_ORDER_REJECTED is shared: "Duplicate order sent." means the clientOrderId is already in use
 # (https://developers.binance.com/docs/binance-spot-api-docs/errors), so the message decides, not the code.
 _DUPLICATE_ORDER_MSG = "duplicate order sent"
+# USDT-M futures -4116 DUPLICATED_CLIENT_ORDER_ID "clientOrderId is duplicated"
+# (https://developers.binance.com/docs/derivatives/usds-margined-futures/error-code). The spot errors page has no
+# -4xxx codes, so this code alone identifies it. (-4115 DUPLICATED_CLIENT_TRAN_ID is a transfer id, not an order.)
+_DUPLICATE_ORDER_CODES = frozenset({"-4116"})
 
 
 def _map_error(code: str, msg: str) -> PyCexError:
-    if code == "-2010" and _DUPLICATE_ORDER_MSG in msg.lower():
+    if (code == "-2010" and _DUPLICATE_ORDER_MSG in msg.lower()) or code in _DUPLICATE_ORDER_CODES:
         return DuplicateOrderError(msg, code=code, exchange="binance")
     if code in _INSUFFICIENT_BALANCE_CODES:
         return InsufficientBalanceError(msg, code=code, exchange="binance")
