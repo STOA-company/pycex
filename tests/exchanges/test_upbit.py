@@ -378,12 +378,35 @@ async def test_create_order_without_identifier_sends_no_key(httpx_mock: HTTPXMoc
     await ex.close()
 
 
-@pytest.mark.parametrize("bad", ["", "x" * 65])
+BAD_IDENTIFIERS = ["", "x" * 65, "a+b", "a/b", "a:b", "a=b", "a b", "a&b", "a%2Fb", "한글", "a~b", "a\n"]
+
+
+@pytest.mark.parametrize("bad", BAD_IDENTIFIERS)
 async def test_create_order_rejects_out_of_range_identifier_without_request(httpx_mock: HTTPXMock, bad: str) -> None:
     ex = Upbit(api_key="k", secret="s")
     with pytest.raises(InvalidOrderError):
         await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=bad)
     assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+@pytest.mark.parametrize("bad", [b for b in BAD_IDENTIFIERS if b])
+async def test_fetch_order_rejects_unsignable_identifier_without_request(httpx_mock: HTTPXMock, bad: str) -> None:
+    ex = Upbit(api_key="k", secret="s")
+    with pytest.raises(InvalidOrderError):
+        await ex.fetch_order(None, "BTC/KRW", client_order_id=bad)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+@pytest.mark.parametrize("ok", ["A-b_9.x", "order.2026-09-26_01", "x" * 64])
+async def test_urlsafe_identifier_signs_identically_encoded_or_not(httpx_mock: HTTPXMock, ok: str) -> None:
+    httpx_mock.add_response(method="POST", json=_order_response())
+    httpx_mock.add_response(method="GET", json=_order_response(identifier=ok))
+    ex = Upbit(api_key="k", secret="s")
+    await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=ok)
+    await ex.fetch_order(None, "BTC/KRW", client_order_id=ok)
+    assert urlencode({"identifier": ok}) == f"identifier={ok}"  # what Upbit hashes (unencoded) == what we hash
     await ex.close()
 
 

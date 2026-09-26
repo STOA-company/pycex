@@ -22,6 +22,7 @@ different underlying bar on Upbit than on Bithumb.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +38,7 @@ from pycex.exceptions import (
 )
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
-from pycex.models.market import Market
+from pycex.models.market import Market, select_markets
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
 from pycex.models.ticker import Ticker
@@ -173,12 +174,12 @@ class KrwV1Mixin:
             data = self._check(await self._http.get("/v1/trades/ticks", params={"market": native, "count": limit}))
         return [_parse_trade(symbol, t) for t in data]
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         async with self._rate_limiter.request("query", group="market"):
             data = self._check(await self._http.get("/v1/market/all", params={"is_details": "true"}))
         markets = [_parse_market(m) for m in data]
         self._markets = {m.native: m for m in markets}
-        return markets
+        return select_markets(markets, symbols)
 
 
 # ── Shared error mapping ──

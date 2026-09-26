@@ -124,6 +124,7 @@ async def test_policy_error_leaves_market_without_ladder(httpx_mock: HTTPXMock) 
     )
     assert "price_tick_ladder" not in market.public_rules
     assert market.public_rules["min_notional"] == "5000"
+    assert market.public_rules["price_tick_ladder_error"] == "request_failed"  # not a silent omission
     assert tick_ladder(market) is None
 
 
@@ -140,12 +141,83 @@ async def test_malformed_policy_is_dropped(httpx_mock: HTTPXMock, bad_tiers: lis
     market = await _market(httpx_mock, body)
     assert "price_tick_ladder" not in market.public_rules
     assert market.public_rules["min_notional"] == "5000"
+    assert market.public_rules["price_tick_ladder_error"] == "malformed"
 
 
 async def test_policy_for_other_symbol_is_ignored(httpx_mock: HTTPXMock) -> None:
     other = {"success": True, "data": [{**POLICY["data"][0], "symbol": "btc_krw"}]}
     market = await _market(httpx_mock, other)
     assert "price_tick_ladder" not in market.public_rules
+    assert market.public_rules["price_tick_ladder_error"] == "malformed"
+
+
+async def test_empty_tier_list_is_flagged(httpx_mock: HTTPXMock) -> None:
+    body = {"success": True, "data": [{"symbol": "xrp_krw", "tickSizePolicy": [], "orderbookLevels": []}]}
+    market = await _market(httpx_mock, body)
+    assert "price_tick_ladder" not in market.public_rules
+    assert market.public_rules["price_tick_ladder_error"] == "malformed"
+
+
+async def test_good_ladder_carries_no_error_key(httpx_mock: HTTPXMock) -> None:
+    assert "price_tick_ladder_error" not in (await _market(httpx_mock)).public_rules
+
+
+# ── fetch_markets(symbols=): 1+k policy calls, not 1+N ──
+
+
+def _three_krw_pairs(httpx_mock: HTTPXMock, policies: tuple[str, ...] = ("xrp_krw", "eth_krw", "ada_krw")) -> None:
+    rows = [
+        PAIR,
+        {**PAIR, "symbol": "eth_krw", "baseCurrency": "eth"},
+        {**PAIR, "symbol": "ada_krw", "baseCurrency": "ada"},
+    ]
+    httpx_mock.add_response(url="https://api.korbit.co.kr/v2/currencyPairs", json=_pairs(*rows), is_reusable=True)
+    for native in policies:  # only these have a mocked policy: an unmocked call fails the test
+        body = load_fixture("korbit", "tick_size_policy_xrp_krw")
+        body["data"][0]["symbol"] = native
+        httpx_mock.add_response(
+            url=f"https://api.korbit.co.kr/v2/tickSizePolicy?symbol={native}", json=body, is_reusable=True
+        )
+
+
+def _policy_calls(httpx_mock: HTTPXMock) -> list[str]:
+    return sorted(r.url.params["symbol"] for r in httpx_mock.get_requests() if r.url.path == "/v2/tickSizePolicy")
+
+
+async def test_symbols_limits_policy_calls_to_the_requested_markets(httpx_mock: HTTPXMock) -> None:
+    _three_krw_pairs(httpx_mock, ("eth_krw", "xrp_krw"))
+    async with Korbit() as ex:
+        markets = await ex.fetch_markets(symbols=["ETH/KRW", "XRP/KRW", "NOPE/KRW"])
+        assert sorted(m.symbol for m in markets) == ["ETH/KRW", "XRP/KRW"]
+        assert all(tick_ladder(m) is not None for m in markets)
+        assert _policy_calls(httpx_mock) == ["eth_krw", "xrp_krw"]  # 1+k: ada_krw was never asked
+        assert len(httpx_mock.get_requests()) == 3
+        assert ex.from_native("ada_krw") == "ADA/KRW"  # cache still covers the whole catalogue
+
+
+async def test_symbols_none_and_empty(httpx_mock: HTTPXMock) -> None:
+    _three_krw_pairs(httpx_mock)
+    async with Korbit() as ex:
+        assert await ex.fetch_markets(symbols=[]) == []
+        assert _policy_calls(httpx_mock) == []  # 1+0
+        assert len(await ex.fetch_markets()) == 3
+        assert _policy_calls(httpx_mock) == ["ada_krw", "eth_krw", "xrp_krw"]  # default unchanged: 1+N
+
+
+async def test_symbols_policy_failure_is_flagged_per_market(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url="https://api.korbit.co.kr/v2/currencyPairs", json=_pairs(PAIR))
+    httpx_mock.add_response(url="https://api.korbit.co.kr/v2/tickSizePolicy?symbol=xrp_krw", status_code=500, json={})
+    async with Korbit() as ex:
+        (market,) = await ex.fetch_markets(symbols=["XRP/KRW"])
+    assert market.public_rules["price_tick_ladder_error"] == "request_failed"
+    assert tick_ladder(market) is None
+
+
+async def test_bare_string_symbols_rejected(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url="https://api.korbit.co.kr/v2/currencyPairs", json=_pairs(PAIR))
+    async with Korbit() as ex:
+        with pytest.raises(TypeError):
+            await ex.fetch_markets(symbols="XRP/KRW")  # type: ignore[arg-type]
 
 
 async def test_empty_markets(httpx_mock: HTTPXMock) -> None:

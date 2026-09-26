@@ -55,6 +55,7 @@ match user's setting."), which surfaces to the caller unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pycex.auth import binance_headers, binance_sign
@@ -82,7 +83,7 @@ from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market, parse_listing_time
+from pycex.models.market import Market, parse_listing_time, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -240,12 +241,12 @@ class Binance(BaseExchange):
             data = await self._http.get(self._p("trades"), params={"symbol": native, "limit": limit})
         return [_parse_trade(symbol, t) for t in data]
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         async with self._rate_limiter.request("query", weight=1 if self.market_type == "linear" else 20):
             data = await self._http.get(self._p("exchangeInfo"))
         markets = [_parse_market(s, self.market_type) for s in data.get("symbols", [])]
         self._markets = {m.native: m for m in markets}
-        return markets
+        return select_markets(markets, symbols)
 
     # ── Account ──
 

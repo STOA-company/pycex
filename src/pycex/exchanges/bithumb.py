@@ -38,6 +38,7 @@ the previous day)**. Confirmed against a live recording — see
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -51,7 +52,7 @@ from pycex.exchanges._krw_v1 import _parse_market as _parse_market
 from pycex.exchanges._krw_v1 import _parse_ticker as _parse_ticker
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance
-from pycex.models.market import Market
+from pycex.models.market import Market, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.ratelimit import ExchangeRateLimiter
@@ -71,6 +72,7 @@ _MY_TRADES_MAX_LIMIT = 50
 # `client_order_id`: apidocs.bithumb.com/reference/주문-요청 (POST /v2/orders body) and .../개별-주문-조회
 # (GET /v1/order query) — "허용 문자: 영문 대/소문자, 숫자, -, _ / 길이: 1–36자". The docs state no reuse rule.
 _CLIENT_ORDER_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,36}")
+_CLIENT_ORDER_ID_ERROR = "client_order_id must be 1-36 characters of A-Z a-z 0-9 - _"
 
 # KRW-market rules, 원화 마켓 거래 정책 안내 (support.bithumb.com/hc/ko/articles/51036972377241, updated
 # 2026-08-11): 최소 주문금액 5,000원, 최소 주문수량 단위 0.00000001, and the price-tier 호가단위 below
@@ -146,7 +148,7 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         """
         return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(_KST).strftime("%Y-%m-%dT%H:%M:%S")
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         """Include the documented KRW policy rules without an authenticated request.
 
         Same ``public_rules`` keys as :class:`pycex.exchanges.upbit.Upbit`. The
@@ -158,7 +160,7 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         ``min_quantity`` stay ``None``. BTC-quote markets have no published
         rules here and keep ``public_rules == {}``.
         """
-        markets = await super().fetch_markets()
+        markets = await super().fetch_markets()  # full catalogue: rules attach to the cached objects too
         for market in markets:
             if market.quote == "KRW":
                 market.min_notional = float(_KRW_MIN_NOTIONAL)
@@ -178,7 +180,7 @@ class Bithumb(KrwV1Mixin, BaseExchange):
                     "price_tick_ladder_source": _KRW_POLICY_URL,
                     "price_tick_ladder_verified_on": "2026-09-26",
                 }
-        return markets
+        return select_markets(markets, symbols)
 
     # ── Account ──
 
@@ -220,7 +222,7 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         ``InvalidOrderError`` before any request).
         """
         if client_order_id is not None and not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
-            raise InvalidOrderError("client_order_id must be 1-36 characters of A-Z a-z 0-9 - _", exchange="bithumb")
+            raise InvalidOrderError(_CLIENT_ORDER_ID_ERROR, exchange="bithumb")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -272,6 +274,8 @@ class Bithumb(KrwV1Mixin, BaseExchange):
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
             raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="bithumb")
+        if client_order_id and not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
+            raise InvalidOrderError(_CLIENT_ORDER_ID_ERROR, exchange="bithumb")
         # The docs do not say which key wins when both are sent, so exactly one is enforced above.
         params = {"client_order_id": client_order_id} if client_order_id else {"uuid": order_id}
         async with self._rate_limiter.request("query"):

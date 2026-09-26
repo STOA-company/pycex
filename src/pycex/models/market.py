@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -41,6 +42,16 @@ class Market(BaseModel):
     listed_at: datetime | None = None
     raw: dict[str, Any] = {}  # noqa: RUF012
     public_rules: dict[str, Any] = {}  # Document-derived rules, units, scope and sources; not API raw.
+
+
+def select_markets(markets: list[Market], symbols: Sequence[str] | None) -> list[Market]:
+    """``fetch_markets(symbols=)`` filter: ``None`` keeps all, otherwise only the listed canonical symbols."""
+    if symbols is None:
+        return markets
+    if isinstance(symbols, str):
+        raise TypeError("symbols must be a sequence of symbols, not a single string")
+    wanted = set(symbols)
+    return [m for m in markets if m.symbol in wanted]
 
 
 TICK_LADDER_KEY = "price_tick_ladder"

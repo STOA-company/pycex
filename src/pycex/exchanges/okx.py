@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Sequence
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -90,7 +91,7 @@ from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market, parse_listing_time
+from pycex.models.market import Market, parse_listing_time, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -284,13 +285,13 @@ class OKX(BaseExchange):
         result = self._check(data)
         return [_parse_trade(symbol, t) for t in result]
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         async with self._rate_limiter.request("query"):
             data = await self._http.get("/api/v5/public/instruments", params={"instType": self._inst_type})
         result = self._check(data)
         markets = [_parse_market(d, self.market_type) for d in result]
         self._markets = {m.native: m for m in markets}
-        return markets
+        return select_markets(markets, symbols)
 
     # ── Account ──
 

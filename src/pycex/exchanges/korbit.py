@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -40,7 +41,7 @@ from pycex.exceptions import (
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
-from pycex.models.market import Market, tick_ladder
+from pycex.models.market import Market, select_markets, tick_ladder
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -187,31 +188,37 @@ class Korbit(BaseExchange):
             data = await self._http.get("/v2/trades", params={"symbol": native, "limit": limit})
         return [_parse_public_trade(symbol, t) for t in _unwrap(data)]
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         """Trading pairs; launched KRW markets also get ``public_rules`` (same keys as Upbit's).
 
         ``price_tick_ladder`` is read from the public ``GET /v2/tickSizePolicy`` (one call per
         market — the endpoint requires ``symbol``), not hard-coded, so it follows the venue.
-        A market whose policy call fails or is malformed simply gets no ladder. Korbit publishes
-        no order-quantity step (``amount_step`` stays ``None``), only ``minOrderValue``.
+        ``symbols`` (canonical, e.g. ``"XRP/KRW"``) restricts both the result and those policy
+        calls to the listed markets (1+k requests instead of 1+N); the other markets stay in the
+        ``from_native`` cache without ``public_rules``. A market whose policy call fails or is
+        malformed gets no ladder, and ``public_rules["price_tick_ladder_error"]`` says why
+        (``"request_failed"`` / ``"malformed"``) — treat it like a missing ladder (fail closed).
+        Korbit publishes no order-quantity step (``amount_step`` stays ``None``), only ``minOrderValue``.
         """
         async with self._rate_limiter.request("query"):
             data = await self._http.get("/v2/currencyPairs")
         markets = [_parse_market(m) for m in _unwrap(data)]
-        krw = [m for m in markets if m.quote == "KRW" and m.active]
+        self._markets = {m.native: m for m in markets}
+        selected = select_markets(markets, symbols)
+        krw = [m for m in selected if m.quote == "KRW" and m.active]
         ladders = await asyncio.gather(*(self._fetch_tick_ladder(m.native) for m in krw))
         for market, ladder in zip(krw, ladders):
             market.public_rules = _krw_rules(market, ladder)
-        self._markets = {m.native: m for m in markets}
-        return markets
+        return selected
 
-    async def _fetch_tick_ladder(self, native: str) -> list[dict[str, str]] | None:
+    async def _fetch_tick_ladder(self, native: str) -> list[dict[str, str]] | str:
+        """The market's tier list, or an error tag (``"request_failed"`` / ``"malformed"``)."""
         try:
             async with self._rate_limiter.request("query"):
                 data = await self._http.get("/v2/tickSizePolicy", params={"symbol": native})
             rows = _unwrap(data)
         except PyCexError:
-            return None
+            return "request_failed"
         for row in rows if isinstance(rows, list) else []:
             if isinstance(row, dict) and row.get("symbol") == native:
                 tiers = row.get("tickSizePolicy")
@@ -221,7 +228,7 @@ class Korbit(BaseExchange):
                         for t in tiers
                         if isinstance(t, dict)
                     ]
-        return None
+        return "malformed"
 
     # ── Account ──
 
@@ -402,7 +409,7 @@ def _parse_market(d: dict[str, Any]) -> Market:
     )
 
 
-def _krw_rules(market: Market, ladder: list[dict[str, str]] | None) -> dict[str, Any]:
+def _krw_rules(market: Market, ladder: list[dict[str, str]] | str) -> dict[str, Any]:
     """Document-derived KRW rules, same keys/units as Upbit's ``public_rules`` (values are exact strings)."""
     min_notional = market.raw.get("minOrderValue")
     max_notional = market.raw.get("maxOrderValue")
@@ -416,15 +423,18 @@ def _krw_rules(market: Market, ladder: list[dict[str, str]] | None) -> dict[str,
         "min_notional_source": f"{_RULES_SOURCE}#get-_v2_currencyPairs",
         "verified_on": _RULES_VERIFIED_ON,
     }
-    if ladder:
-        candidate = market.model_copy(update={"public_rules": {"price_tick_ladder": ladder}})
-        try:
-            tick_ladder(candidate)  # rejects malformed/duplicate tiers
-        except ValueError:
-            return rules
-        rules["price_tick_ladder"] = ladder
-        rules["price_tick_ladder_source"] = f"{_RULES_SOURCE}#get-_v2_tickSizePolicy"
-        rules["price_tick_ladder_verified_on"] = _RULES_VERIFIED_ON
+    if not isinstance(ladder, list) or not ladder:
+        rules["price_tick_ladder_error"] = ladder if isinstance(ladder, str) else "malformed"
+        return rules
+    candidate = market.model_copy(update={"public_rules": {"price_tick_ladder": ladder}})
+    try:
+        tick_ladder(candidate)  # rejects empty/malformed/duplicate tiers
+    except ValueError:
+        rules["price_tick_ladder_error"] = "malformed"
+        return rules
+    rules["price_tick_ladder"] = ladder
+    rules["price_tick_ladder_source"] = f"{_RULES_SOURCE}#get-_v2_tickSizePolicy"
+    rules["price_tick_ladder_verified_on"] = _RULES_VERIFIED_ON
     return rules
 
 

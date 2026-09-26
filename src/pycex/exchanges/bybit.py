@@ -41,6 +41,7 @@ this adapter, matching the brief.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -60,7 +61,7 @@ from pycex.exceptions import (
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
-from pycex.models.market import Market, parse_listing_time
+from pycex.models.market import Market, parse_listing_time, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -226,14 +227,14 @@ class Bybit(BaseExchange):
         result = self._check(data)
         return [_parse_trade(symbol, t) for t in result.get("list", [])]
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         params = {"category": self._category}
         async with self._rate_limiter.request("query"):
             data = await self._http.get("/v5/market/instruments-info", params=params)
         result = self._check(data)
         markets = [m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None]
         self._markets = {m.native: m for m in markets}
-        return markets
+        return select_markets(markets, symbols)
 
     # ── Account ──
 

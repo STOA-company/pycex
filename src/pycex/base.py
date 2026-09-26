@@ -6,7 +6,7 @@ import asyncio
 import time
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from pycex.constants import TIMEFRAME_MS
@@ -113,7 +113,7 @@ class BaseExchange(ABC):
             closed_only: bool = False,
         ) -> list[Candle]: ...
         def fetch_trades_sync(self, symbol: str, *, limit: int = 100) -> list[Trade]: ...
-        def fetch_markets_sync(self) -> list[Market]: ...
+        def fetch_markets_sync(self, *, symbols: Sequence[str] | None = None) -> list[Market]: ...
         def fetch_balance_sync(self) -> Balance: ...
         def create_order_sync(
             self,
@@ -425,7 +425,14 @@ class BaseExchange(ABC):
     async def fetch_trades(self, symbol: str, *, limit: int = 100) -> list[Trade]: ...
 
     @abstractmethod
-    async def fetch_markets(self) -> list[Market]: ...
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
+        """Market metadata; ``symbols`` (canonical, e.g. ``"BTC/KRW"``) narrows the returned list.
+
+        ``None`` (default) returns every market. Venues answer with one catalogue request either way, so
+        the filter only trims the result — except Korbit, which also skips the per-market policy calls
+        of the markets left out. Symbols the venue does not list are simply absent from the result. The
+        symbol cache used by ``from_native`` always covers the full catalogue.
+        """
 
     # ── Account ──
 
