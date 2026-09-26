@@ -39,6 +39,34 @@ _AUTH_NAMES = frozenset(
 )
 _RATE_LIMIT_NAMES = frozenset({"too_many_requests"})
 
+# `identifier` (client_order_id): docs.upbit.com/kr/reference/new-order — unique per account, never reusable,
+# max 64 chars. The docs state no character set, so none is enforced here.
+_IDENTIFIER_MAX_LEN = 64
+
+# KRW-market price tick ladder, (min_price inclusive, tick): docs.upbit.com/kr/docs/krw-market-info, identical to the
+# "new tick" column of the 2025-07-31 notice (docs.upbit.com/kr/changelog/krw_tick_unit_change_250731). BTC/USDT
+# quote markets are outside that notice, so only KRW gets a ladder. USDT/USDC KRW markets use it too — see the
+# PR's confirm_needed on the 2025-03-21 0.5 tick.
+_KRW_TICK_LADDER = (
+    ("0", "0.00000001"),
+    ("0.00001", "0.0000001"),
+    ("0.0001", "0.000001"),
+    ("0.001", "0.00001"),
+    ("0.01", "0.0001"),
+    ("0.1", "0.001"),
+    ("1", "0.01"),
+    ("10", "0.1"),
+    ("100", "1"),
+    ("1000", "1"),
+    ("5000", "5"),
+    ("10000", "10"),
+    ("50000", "50"),
+    ("100000", "100"),
+    ("500000", "500"),
+    ("1000000", "1000"),
+    ("2000000", "1000"),
+)
+
 
 class Upbit(KrwV1Mixin, BaseExchange):
     """Upbit spot exchange — no sandbox, spot only."""
@@ -84,7 +112,9 @@ class Upbit(KrwV1Mixin, BaseExchange):
         ``public_rules`` alone carries the effective market-buy fill quantum
         in base units, derived from the FAQ's eight-decimal truncation example.
         The generic ``amount_step`` remains unknown (None): the FAQ does not
-        establish a general order increment or a separate minimum quantity.
+        establish a general order increment or a separate minimum quantity, and
+        no limit-order quantity step is published, so none is filled in.
+        ``price_tick_ladder`` (same dict) is the official KRW price ladder.
         """
         markets = await super().fetch_markets()
         for market in markets:
@@ -101,6 +131,9 @@ class Upbit(KrwV1Mixin, BaseExchange):
                     "amount_step_source": "https://docs.upbit.com/kr/docs/faq-order",
                     "min_notional_source": "https://docs.upbit.com/kr/docs/krw-market-info",
                     "verified_on": "2026-09-20",
+                    "price_tick_ladder": [{"min_price": floor, "tick": tick} for floor, tick in _KRW_TICK_LADDER],
+                    "price_tick_ladder_source": "https://docs.upbit.com/kr/docs/krw-market-info",
+                    "price_tick_ladder_verified_on": "2026-09-26",
                 }
         return markets
 
@@ -135,8 +168,8 @@ class Upbit(KrwV1Mixin, BaseExchange):
         market orders) rather than whatever Upbit's response happens to
         contain — see ``raw`` for the actual response.
         """
-        if client_order_id is not None:
-            raise NotSupportedError("This adapter does not support client_order_id")
+        if client_order_id is not None and not 0 < len(client_order_id) <= _IDENTIFIER_MAX_LEN:
+            raise InvalidOrderError(f"client_order_id must be 1-{_IDENTIFIER_MAX_LEN} characters", exchange="upbit")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -154,11 +187,14 @@ class Upbit(KrwV1Mixin, BaseExchange):
         else:
             body["ord_type"] = "market"
             body["volume"] = str(amount)
+        if client_order_id is not None:
+            body["identifier"] = client_order_id
         async with self._rate_limiter.request("order"):
             data = self._check(await self._http.post("/v1/orders", data=body, headers=self._headers(body)))
         parsed = _parse_order(symbol, data)
         return parsed.model_copy(
             update={
+                "client_order_id": data.get("identifier") or client_order_id,
                 "side": canonical_side,
                 "type": canonical_type,
                 "amount": amount,
@@ -170,15 +206,16 @@ class Upbit(KrwV1Mixin, BaseExchange):
         params = {"uuid": order_id}
         async with self._rate_limiter.request("order"):
             data = self._check(await self._http.delete("/v1/order", params=params, headers=self._headers(params)))
-        return _parse_order(symbol, data)
+        return _parse_upbit_order(symbol, data)
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
-        if client_order_id is not None or order_id is None:
-            raise NotSupportedError("This adapter requires an exchange order ID")
-        params = {"uuid": order_id}
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="upbit")
+        # Upbit prefers uuid when both are sent; exactly one is enforced above so the lookup key is unambiguous.
+        params = {"identifier": client_order_id} if client_order_id else {"uuid": order_id}
         async with self._rate_limiter.request("query", group="query30"):
             data = self._check(await self._http.get("/v1/order", params=params, headers=self._headers(params)))
-        return _parse_order(symbol, data)
+        return _parse_upbit_order(symbol, data)
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         params: dict[str, Any] = {"state": "wait"}
@@ -186,7 +223,7 @@ class Upbit(KrwV1Mixin, BaseExchange):
             params["market"] = self.to_native(symbol)
         async with self._rate_limiter.request("query", group="query30"):
             data = self._check(await self._http.get("/v1/orders", params=params, headers=self._headers(params)))
-        return [_parse_order(self.from_native(o.get("market", "")), o) for o in data]
+        return [_parse_upbit_order(self.from_native(o.get("market", "")), o) for o in data]
 
     async def fetch_my_trades(
         self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
@@ -225,6 +262,11 @@ class Upbit(KrwV1Mixin, BaseExchange):
         if since is not None:
             trades = [t for t in trades if t.timestamp >= since]
         return trades
+
+
+def _parse_upbit_order(symbol: str, data: dict[str, Any]) -> Order:
+    """Shared KRW order parse plus Upbit's ``identifier`` echo (orders created after 2024-10-18 carry it)."""
+    return _parse_order(symbol, data).model_copy(update={"client_order_id": data.get("identifier") or None})
 
 
 # ── Errors ──

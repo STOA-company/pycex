@@ -13,8 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (list of `{"min_price", "tick"}` decimal strings, `min_price` inclusive) and the
   `tick_for_price(market, price)` / `tick_ladder(market)` helpers in
   `pycex.models`. Without a ladder `tick_for_price` returns the scalar
-  `price_tick`; `Market.price_tick` itself is unchanged. No exchange fills a
-  ladder yet.
+  `price_tick`; `Market.price_tick` itself is unchanged.
+- Upbit: `create_order(..., client_order_id=...)` is sent as `identifier` (1-64
+  characters, unique per account and never reusable per the docs; other
+  lengths raise `InvalidOrderError` before any request) and
+  `fetch_order(None, symbol, client_order_id=...)` looks it up by `identifier`.
+  Exactly one of `order_id`/`client_order_id` is required. The order parsers echo
+  `identifier` as `Order.client_order_id`.
+- Upbit: KRW markets' `public_rules` now carries `price_tick_ladder` (the 17-tier
+  official KRW ladder, post 2025-07-31) in the same dict as the amount rules.
+  BTC/USDT quote markets get none, and no limit-order quantity step is published.
 
 ## [0.4.2] - 2026-09-26
 
