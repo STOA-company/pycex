@@ -18,6 +18,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    InvalidOrderError,
     NotSupportedError,
     OrderNotFoundError,
     SymbolNotFoundError,
@@ -331,4 +332,115 @@ async def test_candles_page_to_param_is_utc(httpx_mock: HTTPXMock) -> None:
     ex = Upbit()
     await ex._fetch_candles_page("KRW-BTC", "1d", since=None, until=1_787_615_999_999, limit=3)
     assert httpx_mock.get_request().url.params["to"] == "2026-08-25T00:00:00Z"
+    await ex.close()
+
+
+# ── identifier (client_order_id): docs.upbit.com/kr/reference/new-order — unique, unreusable, max 64 chars ──
+
+CID = "qtx-0123456789abcdef0123456789abcdef"  # 36 chars, legacy order_key shape
+
+
+async def test_create_order_sends_identifier_signed_and_echoes_it(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json=_order_response(identifier=CID))
+    ex = Upbit(api_key="k", secret="s")
+    order = await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=CID)
+    req = httpx_mock.get_request()
+    body = json.loads(req.content)
+    expected_body = {
+        "market": "KRW-BTC",
+        "side": "bid",
+        "ord_type": "limit",
+        "volume": "0.01",
+        "price": "50000000",
+        "identifier": CID,
+    }
+    assert body == expected_body
+    _assert_bearer_query_hash(req.headers, expected_body)  # identifier is inside the signed query_hash
+    assert order.client_order_id == CID
+    await ex.close()
+
+
+async def test_create_order_identifier_echo_falls_back_to_request_value(httpx_mock: HTTPXMock) -> None:
+    # Ack without an identifier field (pre-2024-10-18 shape): keep what the caller sent.
+    httpx_mock.add_response(method="POST", json=_order_response())
+    ex = Upbit(api_key="k", secret="s")
+    order = await ex.create_order("BTC/KRW", "sell", "market", 0.02, client_order_id=CID)
+    assert order.client_order_id == CID
+    await ex.close()
+
+
+async def test_create_order_without_identifier_sends_no_key(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json=_order_response())
+    ex = Upbit(api_key="k", secret="s")
+    order = await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000)
+    assert "identifier" not in json.loads(httpx_mock.get_request().content)
+    assert order.client_order_id is None
+    await ex.close()
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 65])
+async def test_create_order_rejects_out_of_range_identifier_without_request(httpx_mock: HTTPXMock, bad: str) -> None:
+    ex = Upbit(api_key="k", secret="s")
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=bad)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+async def test_create_order_accepts_64_char_identifier(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json=_order_response())
+    ex = Upbit(api_key="k", secret="s")
+    await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id="x" * 64)
+    assert json.loads(httpx_mock.get_request().content)["identifier"] == "x" * 64
+    await ex.close()
+
+
+async def test_fetch_order_by_identifier(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", json=_order_response(identifier=CID))
+    ex = Upbit(api_key="k", secret="s")
+    order = await ex.fetch_order(None, "BTC/KRW", client_order_id=CID)
+    req = httpx_mock.get_request()
+    assert req.url.path == "/v1/order"
+    assert dict(req.url.params) == {"identifier": CID}  # no uuid alongside: Upbit would prefer uuid
+    _assert_bearer_query_hash(req.headers, {"identifier": CID})
+    assert order.id == "order-uuid-1" and order.client_order_id == CID
+    await ex.close()
+
+
+async def test_fetch_order_by_uuid_still_sends_uuid_only(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", json=_order_response())
+    ex = Upbit(api_key="k", secret="s")
+    order = await ex.fetch_order("order-uuid-1", "BTC/KRW")
+    assert dict(httpx_mock.get_request().url.params) == {"uuid": "order-uuid-1"}
+    assert order.client_order_id is None
+    await ex.close()
+
+
+@pytest.mark.parametrize(("order_id", "client_id"), [(None, None), ("", ""), ("order-uuid-1", CID)])
+async def test_fetch_order_requires_exactly_one_key_without_request(
+    httpx_mock: HTTPXMock, order_id: str | None, client_id: str | None
+) -> None:
+    ex = Upbit(api_key="k", secret="s")
+    with pytest.raises(InvalidOrderError):
+        await ex.fetch_order(order_id, "BTC/KRW", client_order_id=client_id)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+async def test_fetch_order_identifier_not_found_maps_404(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET", status_code=404, json={"error": {"name": "order_not_found", "message": "주문을 찾지 못했습니다"}}
+    )
+    ex = Upbit(api_key="k", secret="s")
+    with pytest.raises(OrderNotFoundError):
+        await ex.fetch_order(None, "BTC/KRW", client_order_id=CID)
+    await ex.close()
+
+
+async def test_open_orders_and_cancel_echo_identifier(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", json=[_order_response(identifier=CID)])
+    httpx_mock.add_response(method="DELETE", json=_order_response(state="cancel", identifier=CID))
+    ex = Upbit(api_key="k", secret="s")
+    assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
+    assert (await ex.cancel_order("order-uuid-1", "BTC/KRW")).client_order_id == CID
     await ex.close()
