@@ -1,0 +1,60 @@
+{
+  "success": true,
+  "data": [
+    {
+      "symbol": "xrp_krw",
+      "tickSizePolicy": [
+        {
+          "priceGte": "0",
+          "tickSize": "0.0001"
+        },
+        {
+          "priceGte": "1",
+          "tickSize": "0.001"
+        },
+        {
+          "priceGte": "10",
+          "tickSize": "0.01"
+        },
+        {
+          "priceGte": "100",
+          "tickSize": "0.1"
+        },
+        {
+          "priceGte": "1000",
+          "tickSize": "1"
+        },
+        {
+          "priceGte": "5000",
+          "tickSize": "5"
+        },
+        {
+          "priceGte": "10000",
+          "tickSize": "10"
+        },
+        {
+          "priceGte": "50000",
+          "tickSize": "50"
+        },
+        {
+          "priceGte": "100000",
+          "tickSize": "100"
+        },
+        {
+          "priceGte": "500000",
+          "tickSize": "500"
+        },
+        {
+          "priceGte": "1000000",
+          "tickSize": "1000"
+        }
+      ],
+      "orderbookLevels": [
+        "0.1",
+        "1",
+        "10",
+        "100"
+      ]
+    }
+  ]
+}

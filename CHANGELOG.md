@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`Market.min_notional`/`amount_step` set too) and the 11-tier `price_tick_ladder`. The
   page does not say whether an off-step quantity is rounded or rejected, so
   `amount_rounding`/`min_quantity` are `None`. BTC-quote markets get no rules.
+- Korbit: `create_order(..., client_order_id=...)` is sent as `clientOrderId`
+  (`[0-9a-zA-Z.:_-]{1,36}` per the docs; other values raise `InvalidOrderError`
+  before any request) and `fetch_order(None, symbol, client_order_id=...)` looks it
+  up by `clientOrderId`. Exactly one of `order_id`/`client_order_id` is required
+  (previously `NotSupportedError`). The order parser echoes `clientOrderId`.
+- Korbit: launched KRW markets' `public_rules` now carries `price_tick_ladder`,
+  read from the public `GET /v2/tickSizePolicy` (one call per market, `fetch_markets`
+  makes 1 + N public requests), plus the Upbit-shaped rule keys (`min_notional`,
+  `max_notional`, units, sources). A market whose policy call fails gets no ladder.
+  Korbit publishes no order-quantity step, so `amount_step` stays `None`.
 
 ## [0.4.2] - 2026-09-26
 

@@ -84,3 +84,8 @@ entries above. Any future exchange whose daily-bar API takes a bare vs.
 `utc`-suffixed variant should be recorded with the `utc` form by default and
 have its boundary explicitly checked (`ts % 86_400_000`), not assumed from
 the array shape alone.
+
+- **korbit `tick_size_policy_xrp_krw.json`** (`GET /v2/tickSizePolicy?symbol=xrp_krw`) — NOT a live
+  recording: the response example of the official page
+  docs.digitalx.miraeasset.com/llms/en/rest_api/quotation.md (read 2026-09-26; no exchange call was
+  made). `priceGte` is inclusive; the item with the largest `priceGte` <= order price gives `tickSize`.
