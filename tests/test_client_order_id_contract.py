@@ -15,7 +15,7 @@ import json
 import httpx
 import pytest
 
-from pycex import OKX, Binance, Bitget, Bithumb, Bybit, Korbit
+from pycex import OKX, Binance, Bitget, Bybit, Korbit
 from pycex.exceptions import InvalidOrderError, NotSupportedError
 
 CID = "SyntheticOrder42"
@@ -186,7 +186,7 @@ def test_sync_twins_forward_client_order_id(cls):
         ex.close_sync()
 
 
-@pytest.mark.parametrize("cls", [Bithumb, Korbit, Bybit])
+@pytest.mark.parametrize("cls", [Korbit, Bybit])
 async def test_other_exchanges_reject_client_order_id_without_request(cls):
     ex = cls(api_key="k", secret="s")
     seen = []

@@ -16,6 +16,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    InvalidOrderError,
     NotSupportedError,
     OrderNotFoundError,
     SymbolNotFoundError,
@@ -409,4 +410,120 @@ async def test_candles_page_to_param_is_naive_kst(httpx_mock: HTTPXMock) -> None
     await ex._fetch_candles_page("KRW-BTC", "1d", since=None, until=1_787_615_999_999, limit=3)
     to = httpx_mock.get_request().url.params["to"]
     assert to == "2026-08-25T09:00:00"
+    await ex.close()
+
+
+# ── client_order_id: apidocs.bithumb.com 주문 요청 (POST /v2/orders) / 개별 주문 조회 (GET /v1/order) ──
+
+CID = "qtx-0123456789abcdef0123456789abcdef"  # 36 chars of [A-Za-z0-9-]
+
+
+async def test_create_order_sends_client_order_id_signed_and_echoes_it(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json=_v2_create_response(client_order_id=CID))
+    ex = Bithumb(api_key="k", secret="s")
+    order = await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=CID)
+    req = httpx_mock.get_request()
+    expected_body = {
+        "market": "KRW-BTC",
+        "side": "bid",
+        "order_type": "limit",
+        "volume": "0.01",
+        "price": "50000000",
+        "client_order_id": CID,
+    }
+    assert json.loads(req.content) == expected_body
+    _assert_bearer_query_hash(req.headers, expected_body)  # client_order_id is inside the signed query_hash
+    assert order.client_order_id == CID
+    await ex.close()
+
+
+async def test_create_order_client_order_id_echo_falls_back_to_request_value(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json=_v2_create_response())
+    ex = Bithumb(api_key="k", secret="s")
+    order = await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=CID)
+    assert order.client_order_id == CID
+    await ex.close()
+
+
+async def test_create_order_without_client_order_id_sends_no_key(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", json=_v2_create_response())
+    ex = Bithumb(api_key="k", secret="s")
+    order = await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000)
+    assert "client_order_id" not in json.loads(httpx_mock.get_request().content)
+    assert order.client_order_id is None
+    await ex.close()
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 37, "has space", "a/b", "a+b", "한글", "a:b"])
+async def test_create_order_rejects_invalid_client_order_id_without_request(httpx_mock: HTTPXMock, bad: str) -> None:
+    ex = Bithumb(api_key="k", secret="s")
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=bad)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+@pytest.mark.parametrize("ok", ["x", "x" * 36, "A-b_9"])
+async def test_create_order_accepts_documented_client_order_id_range(httpx_mock: HTTPXMock, ok: str) -> None:
+    httpx_mock.add_response(method="POST", json=_v2_create_response())
+    ex = Bithumb(api_key="k", secret="s")
+    await ex.create_order("BTC/KRW", "buy", "limit", 0.01, price=50_000_000, client_order_id=ok)
+    assert json.loads(httpx_mock.get_request().content)["client_order_id"] == ok
+    await ex.close()
+
+
+async def test_fetch_order_by_client_order_id(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", json=_full_order_response(client_order_id=CID))
+    ex = Bithumb(api_key="k", secret="s")
+    order = await ex.fetch_order(None, "BTC/KRW", client_order_id=CID)
+    req = httpx_mock.get_request()
+    assert req.url.path == "/v1/order"
+    assert dict(req.url.params) == {"client_order_id": CID}  # no uuid alongside: precedence is undocumented
+    _assert_bearer_query_hash(req.headers, {"client_order_id": CID})
+    assert order.id == "order-uuid-1" and order.client_order_id == CID
+    await ex.close()
+
+
+async def test_fetch_order_by_uuid_still_sends_uuid_only(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", json=_full_order_response())
+    ex = Bithumb(api_key="k", secret="s")
+    order = await ex.fetch_order("order-uuid-1", "BTC/KRW")
+    assert dict(httpx_mock.get_request().url.params) == {"uuid": "order-uuid-1"}
+    assert order.client_order_id is None
+    await ex.close()
+
+
+@pytest.mark.parametrize(("order_id", "client_id"), [(None, None), ("", ""), ("order-uuid-1", CID)])
+async def test_fetch_order_requires_exactly_one_key_without_request(
+    httpx_mock: HTTPXMock, order_id: str | None, client_id: str | None
+) -> None:
+    ex = Bithumb(api_key="k", secret="s")
+    with pytest.raises(InvalidOrderError):
+        await ex.fetch_order(order_id, "BTC/KRW", client_order_id=client_id)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+async def test_open_orders_and_cancel_echo_client_order_id(httpx_mock: HTTPXMock) -> None:
+    pending = {
+        "order_id": "order-uuid-1",
+        "side": "bid",
+        "order_type": "limit",
+        "price": "50000000.0",
+        "state": "wait",
+        "market": "KRW-BTC",
+        "created_at": "2026-08-30T00:00:00+09:00",
+        "volume": "0.01",
+        "remaining_volume": "0.01",
+        "executed_volume": "0.0",
+        "client_order_id": CID,
+    }
+    httpx_mock.add_response(method="GET", json={"data": [pending], "has_next": False, "next_key": None})
+    httpx_mock.add_response(
+        method="DELETE",
+        json={"order_id": "order-uuid-1", "client_order_id": CID, "created_at": "2026-08-30T00:00:00+09:00"},
+    )
+    ex = Bithumb(api_key="k", secret="s")
+    assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
+    assert (await ex.cancel_order("order-uuid-1", "BTC/KRW")).client_order_id == CID
     await ex.close()
