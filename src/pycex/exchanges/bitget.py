@@ -100,6 +100,7 @@ adapters' posture in this phase.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlencode
 
@@ -120,7 +121,7 @@ from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
 from pycex.models.funding import FundingRate
-from pycex.models.market import Market, parse_listing_time
+from pycex.models.market import Market, parse_listing_time, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
@@ -397,13 +398,13 @@ class Bitget(BaseExchange):
             data = await self._http.get(self._p("trades"), params=params)
         return [_parse_trade(symbol, t) for t in self._check(data)]
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         params = self._mix_params() if self.market_type == "linear" else None
         async with self._rate_limiter.request("query"):
             data = await self._http.get(self._p("markets"), params=params)
         markets = [_parse_market(d, self.market_type) for d in self._check(data)]
         self._markets = {m.native: m for m in markets}
-        return markets
+        return select_markets(markets, symbols)
 
     # ── Account ──
 

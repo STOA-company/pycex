@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fetch_markets(*, symbols=None)` (and `fetch_markets_sync`) on every venue: an optional
+  sequence of canonical symbols that narrows the returned list. `None` keeps today's
+  behavior; a bare string raises `TypeError`; unlisted symbols are just absent. The
+  `from_native` cache still covers the full catalogue. Korbit also restricts its
+  `GET /v2/tickSizePolicy` calls to the requested KRW markets (1+k requests instead of
+  1+N), so callers no longer need the private `_fetch_tick_ladder`. Other venues make
+  the same single catalogue request and only trim the result.
+- Korbit: a market whose tick-size policy call fails or comes back malformed/empty now
+  carries `public_rules["price_tick_ladder_error"]` (`"request_failed"` or `"malformed"`)
+  next to the missing `price_tick_ladder`, instead of being silently left without one.
+  Treat it like no ladder (fail closed).
+
+### Changed
+
+- Upbit: `client_order_id` (`identifier`) is now limited to 1-64 characters of
+  `A-Za-z0-9_.-`, on both `create_order` and `fetch_order(None, ..., client_order_id=)`;
+  anything else raises `InvalidOrderError` before any request. The JWT `query_hash` is
+  built from the urlencoded query while Upbit hashes it unencoded, so `+ / : =` or a
+  space in an identifier would have been rejected with a 401 at signing time.
+- Bithumb: `fetch_order(None, ..., client_order_id=)` validates the id with the same rule
+  as `create_order` (1-36 characters of `A-Za-z0-9_-`); anything else raises
+  `InvalidOrderError` before any request.
+
 ## [0.4.3] - 2026-09-26
 
 ### Added

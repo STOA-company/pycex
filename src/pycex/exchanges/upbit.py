@@ -14,6 +14,8 @@ what's shared and why the private/trading methods below are not.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from typing import Any
 
 from pycex.auth import upbit_headers
@@ -26,7 +28,7 @@ from pycex.exchanges._krw_v1 import _parse_market as _parse_market
 from pycex.exchanges._krw_v1 import _parse_ticker as _parse_ticker
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance
-from pycex.models.market import Market
+from pycex.models.market import Market, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.ratelimit import ExchangeRateLimiter
@@ -40,8 +42,11 @@ _AUTH_NAMES = frozenset(
 _RATE_LIMIT_NAMES = frozenset({"too_many_requests"})
 
 # `identifier` (client_order_id): docs.upbit.com/kr/reference/new-order — unique per account, never reusable,
-# max 64 chars. The docs state no character set, so none is enforced here.
-_IDENTIFIER_MAX_LEN = 64
+# max 64 chars. The docs state no character set, but the JWT ``query_hash`` covers the query as urlencoded here
+# while Upbit hashes it unencoded, so any char urlencode rewrites (``+ / : = space``...) would fail signing with a
+# 401. Restricting to chars urlencode leaves alone keeps both forms identical.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+_IDENTIFIER_ERROR = "client_order_id must be 1-64 characters of A-Z a-z 0-9 - _ ."
 
 # KRW-market price tick ladder, (min_price inclusive, tick): docs.upbit.com/kr/docs/krw-market-info, identical to the
 # "new tick" column of the 2025-07-31 notice (docs.upbit.com/kr/changelog/krw_tick_unit_change_250731). BTC/USDT
@@ -106,7 +111,7 @@ class Upbit(KrwV1Mixin, BaseExchange):
     def _headers(self, params: dict[str, Any] | None = None) -> dict[str, str]:
         return upbit_headers(self._api_key, self._secret, params)
 
-    async def fetch_markets(self) -> list[Market]:
+    async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
         """Include documented KRW rules without an authenticated request.
 
         ``public_rules`` alone carries the effective market-buy fill quantum
@@ -116,7 +121,7 @@ class Upbit(KrwV1Mixin, BaseExchange):
         no limit-order quantity step is published, so none is filled in.
         ``price_tick_ladder`` (same dict) is the official KRW price ladder.
         """
-        markets = await super().fetch_markets()
+        markets = await super().fetch_markets()  # full catalogue: rules attach to the cached objects too
         for market in markets:
             if market.quote == "KRW":
                 market.min_notional = 5000.0
@@ -135,7 +140,7 @@ class Upbit(KrwV1Mixin, BaseExchange):
                     "price_tick_ladder_source": "https://docs.upbit.com/kr/docs/krw-market-info",
                     "price_tick_ladder_verified_on": "2026-09-26",
                 }
-        return markets
+        return select_markets(markets, symbols)
 
     # ── Account ──
 
@@ -168,8 +173,8 @@ class Upbit(KrwV1Mixin, BaseExchange):
         market orders) rather than whatever Upbit's response happens to
         contain — see ``raw`` for the actual response.
         """
-        if client_order_id is not None and not 0 < len(client_order_id) <= _IDENTIFIER_MAX_LEN:
-            raise InvalidOrderError(f"client_order_id must be 1-{_IDENTIFIER_MAX_LEN} characters", exchange="upbit")
+        if client_order_id is not None and not _IDENTIFIER_RE.fullmatch(client_order_id):
+            raise InvalidOrderError(_IDENTIFIER_ERROR, exchange="upbit")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -211,6 +216,8 @@ class Upbit(KrwV1Mixin, BaseExchange):
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
             raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="upbit")
+        if client_order_id and not _IDENTIFIER_RE.fullmatch(client_order_id):
+            raise InvalidOrderError(_IDENTIFIER_ERROR, exchange="upbit")
         # Upbit prefers uuid when both are sent; exactly one is enforced above so the lookup key is unambiguous.
         params = {"identifier": client_order_id} if client_order_id else {"uuid": order_id}
         async with self._rate_limiter.request("query", group="query30"):

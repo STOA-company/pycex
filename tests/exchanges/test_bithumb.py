@@ -463,6 +463,24 @@ async def test_create_order_rejects_invalid_client_order_id_without_request(http
     await ex.close()
 
 
+@pytest.mark.parametrize("bad", ["", "x" * 37, "has space", "a/b", "a+b", "한글", "a:b", "a=b", "a.b"])
+async def test_fetch_order_rejects_invalid_client_order_id_without_request(httpx_mock: HTTPXMock, bad: str) -> None:
+    ex = Bithumb(api_key="k", secret="s")
+    with pytest.raises(InvalidOrderError):
+        await ex.fetch_order(None, "BTC/KRW", client_order_id=bad)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+@pytest.mark.parametrize("ok", ["x", "x" * 36, "A-b_9"])
+async def test_fetch_order_accepts_the_same_range_as_create(httpx_mock: HTTPXMock, ok: str) -> None:
+    httpx_mock.add_response(method="GET", json=_full_order_response(client_order_id=ok))
+    ex = Bithumb(api_key="k", secret="s")
+    await ex.fetch_order(None, "BTC/KRW", client_order_id=ok)
+    assert dict(httpx_mock.get_request().url.params) == {"client_order_id": ok}
+    await ex.close()
+
+
 @pytest.mark.parametrize("ok", ["x", "x" * 36, "A-b_9"])
 async def test_create_order_accepts_documented_client_order_id_range(httpx_mock: HTTPXMock, ok: str) -> None:
     httpx_mock.add_response(method="POST", json=_v2_create_response())
