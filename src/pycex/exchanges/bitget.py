@@ -110,6 +110,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    InvalidOrderError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -447,7 +448,14 @@ class Bitget(BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        client_order_id: str | None = None,
     ) -> Order:
         native = self.to_native(symbol)
         path = self._p("order")
@@ -477,6 +485,8 @@ class Bitget(BaseExchange):
                 body["force"] = "gtc"
                 if price is not None:
                     body["price"] = str(price)
+        if client_order_id is not None:
+            body["clientOid"] = client_order_id
         body_str = json.dumps(body)
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
@@ -484,6 +494,7 @@ class Bitget(BaseExchange):
         first = r[0] if r else {}
         return Order(
             id=first.get("orderId", ""),
+            client_order_id=first.get("clientOid") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
@@ -507,20 +518,23 @@ class Bitget(BaseExchange):
         first = r[0] if r else {}
         return Order(id=first.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
+        lookup = {"clientOid": client_order_id} if client_order_id else {"orderId": order_id}
         params: dict[str, Any]
         if self.market_type == "linear":
-            params = self._mix_params({"symbol": native, "orderId": order_id})
+            params = self._mix_params({"symbol": native, **lookup})
         else:
-            # Bitget's spot order-info endpoint is keyed by orderId only — no symbol filter to convert.
-            params = {"orderId": order_id}
+            # Bitget's spot order-info endpoint has no symbol filter to convert.
+            params = lookup
         path = self._path(self._p("orderInfo"), params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, headers=self._signed_get(path))
         r = self._check(data)
         if not r:
-            return Order(id=order_id, symbol=symbol, side="", type="", amount=0)
+            return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
         return _parse_order_mix(symbol, r[0]) if self.market_type == "linear" else _parse_order(symbol, r[0])
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
@@ -786,6 +800,7 @@ def _parse_order_mix(symbol: str, d: dict[str, Any]) -> Order:
         status = d.get("state", "")
     return Order(
         id=str(d.get("orderId", "")),
+        client_order_id=d.get("clientOid") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("orderType", "").lower(),

@@ -114,7 +114,14 @@ class Upbit(KrwV1Mixin, BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        client_order_id: str | None = None,
     ) -> Order:
         """Place an order.
 
@@ -128,6 +135,8 @@ class Upbit(KrwV1Mixin, BaseExchange):
         market orders) rather than whatever Upbit's response happens to
         contain — see ``raw`` for the actual response.
         """
+        if client_order_id is not None:
+            raise NotSupportedError("This adapter does not support client_order_id")
         native = self.to_native(symbol)
         canonical_side = side.lower()
         canonical_type = order_type.lower()
@@ -163,7 +172,9 @@ class Upbit(KrwV1Mixin, BaseExchange):
             data = self._check(await self._http.delete("/v1/order", params=params, headers=self._headers(params)))
         return _parse_order(symbol, data)
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if client_order_id is not None or order_id is None:
+            raise NotSupportedError("This adapter requires an exchange order ID")
         params = {"uuid": order_id}
         async with self._rate_limiter.request("query", group="query30"):
             data = self._check(await self._http.get("/v1/order", params=params, headers=self._headers(params)))

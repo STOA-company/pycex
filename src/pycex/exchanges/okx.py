@@ -536,19 +536,23 @@ class OKX(BaseExchange):
             raw=data,
         )
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
-        path = f"/api/v5/trade/order?instId={native}&ordId={order_id}"
+        lookup = {"clOrdId": _validated_client_order_id(client_order_id)} if client_order_id else {"ordId": order_id}
+        params = {"instId": native, **lookup}
+        path = "/api/v5/trade/order?" + urlencode(params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(
                 "/api/v5/trade/order",
-                params={"instId": native, "ordId": order_id},
+                params=params,
                 headers=self._auth_headers("GET", path),
             )
         result = self._check(data)
         if result:
             return _parse_order(symbol, result[0])
-        return Order(id=order_id, symbol=symbol, side="", type="", amount=0)
+        return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         params: dict[str, Any] = {}
