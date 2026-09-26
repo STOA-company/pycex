@@ -116,10 +116,19 @@ class BaseExchange(ABC):
         def fetch_markets_sync(self) -> list[Market]: ...
         def fetch_balance_sync(self) -> Balance: ...
         def create_order_sync(
-            self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+            self,
+            symbol: str,
+            side: str,
+            order_type: str,
+            amount: float,
+            price: float | None = None,
+            *,
+            client_order_id: str | None = None,
         ) -> Order: ...
         def cancel_order_sync(self, order_id: str, symbol: str) -> Order: ...
-        def fetch_order_sync(self, order_id: str, symbol: str) -> Order: ...
+        def fetch_order_sync(
+            self, order_id: str | None, symbol: str, *, client_order_id: str | None = None
+        ) -> Order: ...
         def fetch_open_orders_sync(self, symbol: str | None = None) -> list[Order]: ...
         def fetch_my_trades_sync(
             self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
@@ -470,14 +479,21 @@ class BaseExchange(ABC):
 
     @abstractmethod
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        client_order_id: str | None = None,
     ) -> Order: ...
 
     @abstractmethod
     async def cancel_order(self, order_id: str, symbol: str) -> Order: ...
 
     @abstractmethod
-    async def fetch_order(self, order_id: str, symbol: str) -> Order: ...
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order: ...
 
     @abstractmethod
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]: ...

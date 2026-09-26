@@ -72,6 +72,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    InvalidOrderError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -283,7 +284,14 @@ class Binance(BaseExchange):
     # ── Trading ──
 
     async def create_order(
-        self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        client_order_id: str | None = None,
     ) -> Order:
         native = self.to_native(symbol)
         params: dict[str, Any] = {
@@ -292,6 +300,8 @@ class Binance(BaseExchange):
             "type": order_type.upper(),
             "quantity": str(amount),
         }
+        if client_order_id is not None:
+            params["newClientOrderId"] = client_order_id
         if price is not None:
             params["price"] = str(price)
             params["timeInForce"] = "GTC"
@@ -307,10 +317,13 @@ class Binance(BaseExchange):
             data = await self._http.delete(self._p("order"), params=params, headers=self._auth_headers())
         return _parse_order(symbol, data)
 
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
+    async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
+        lookup = {"origClientOrderId": client_order_id} if client_order_id else {"orderId": order_id}
         async with self._rate_limiter.request("query", weight=1 if self.market_type == "linear" else 4):
-            params = self._signed_params({"symbol": native, "orderId": order_id})
+            params = self._signed_params({"symbol": native, **lookup})
             data = await self._http.get(self._p("order"), params=params, headers=self._auth_headers())
         return _parse_order(symbol, data)
 
@@ -517,6 +530,7 @@ def _parse_my_trade(symbol: str, t: dict[str, Any]) -> MyTrade:
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     return Order(
         id=str(d.get("orderId", "")),
+        client_order_id=d.get("clientOrderId") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("type", "").lower(),
