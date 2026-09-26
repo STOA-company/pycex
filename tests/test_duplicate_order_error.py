@@ -7,6 +7,11 @@ Sources:
 - OKX 51016 "Client order ID already exists." — https://www.okx.com/docs-v5/en/#error-code-rest-api-trade
 - Binance -2010 "Duplicate order sent." — https://developers.binance.com/docs/binance-spot-api-docs/errors
 - Bitget 40786 "Duplicate clientOid" — https://bitgetlimited.github.io/apidoc/en/spot/ (Error Code table)
+- Bitget, same table: 40708 "client_oid duplicate", 43118 "clientOrderId duplicate" (also the spot place-order
+  "Duplicate clientOrderId Response" example), 45034 "clientOid duplicate", 50060 "Duplicated clientOid"
+- Binance USDT-M futures -4116 DUPLICATED_CLIENT_ORDER_ID "clientOrderId is duplicated" —
+  https://developers.binance.com/docs/derivatives/usds-margined-futures/error-code (the spot errors page has no
+  -4xxx codes, so the code is unambiguous)
 - Upbit ``duplicated_identifier`` (400) — https://docs.upbit.com/kr/reference/rest-api-guide
 - Korbit ``DUPLICATE_CLIENT_ORDER_ID`` — https://docs.digitalx.miraeasset.com/llms/en/rest_api/trading.md
 
@@ -40,6 +45,21 @@ _DUPLICATE_BODIES: list[tuple[Any, int, dict[str, Any], str]] = [
         "-2010",
     ),
     (bitget._error_mapper, 400, {"code": "40786", "msg": "Duplicate clientOid", "requestTime": 1627293504611}, "40786"),
+    (
+        bitget._error_mapper,
+        400,
+        {"code": "40708", "msg": "client_oid duplicate", "requestTime": 1627293504611},
+        "40708",
+    ),
+    (bitget._error_mapper, 400, {"code": "43118", "msg": "clientOrderId duplicate"}, "43118"),
+    (bitget._error_mapper, 400, {"code": "45034", "msg": "clientOid duplicate", "requestTime": 1627293504611}, "45034"),
+    (
+        bitget._error_mapper,
+        400,
+        {"code": "50060", "msg": "Duplicated clientOid", "requestTime": 1627293504611},
+        "50060",
+    ),
+    (binance._error_mapper, 400, {"code": -4116, "msg": "clientOrderId is duplicated."}, "-4116"),
     (
         upbit._map_error,
         400,
@@ -109,6 +129,11 @@ async def test_okx_create_order_scode_51016_raises_duplicate_order_error(httpx_m
         ),
         (bitget._error_mapper, 400, {"code": "40711", "msg": "x"}, InsufficientBalanceError),
         (bitget._error_mapper, 400, {"code": "40787", "msg": "x"}, ExchangeError),
+        # Neighbours of the newly mapped codes stay generic (-4115 is a transfer id, not an order id).
+        (bitget._error_mapper, 400, {"code": "43119", "msg": "Trading is not open"}, ExchangeError),
+        (bitget._error_mapper, 400, {"code": "40709", "msg": "x"}, ExchangeError),
+        (binance._error_mapper, 400, {"code": -4115, "msg": "clientTranId is duplicated"}, ExchangeError),
+        (binance._error_mapper, 400, {"code": -4117, "msg": "x"}, ExchangeError),
         (
             upbit._map_error,
             400,
@@ -123,6 +148,13 @@ def test_other_codes_keep_their_mapping(
 ) -> None:
     err = mapper(status, body)
     assert type(err) is expected
+
+
+def test_okx_51784_is_not_mapped() -> None:
+    # Documented only for finance/flexible-loan borrow and repay ("Client order ID is being processed"),
+    # never for POST /api/v5/trade/order, so it stays the generic ExchangeError.
+    err = okx._error_mapper(200, {"code": "51784", "msg": "Client order ID is being processed", "data": []})
+    assert type(err) is ExchangeError
 
 
 def test_bithumb_has_no_documented_duplicate_error_so_stays_generic() -> None:
