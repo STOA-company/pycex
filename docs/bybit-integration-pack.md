@@ -11,14 +11,16 @@
 - Create acknowledgement prefers Bybit's echoed `orderLinkId`, with caller ID as fallback.
 - `fetch_order` accepts exactly one of `order_id` and `client_order_id`.
 - Lookup sends `orderId` or `orderLinkId` to `/v5/order/realtime`, then `/v5/order/history` if absent.
-- A missing row after both endpoints raises `OrderNotFoundError`; Bybit error `110072` maps to `DuplicateOrderError`.
+- A missing row after both endpoints raises `OrderNotFoundError`; duplicate codes `110072` (UTA) and `170141` (Spot Trade) map to `DuplicateOrderError`.
+- Realtime lookup rate-limit/auth errors propagate after one request; only not-found falls through to history.
 - `fetch_ticker` reads the V5 response's top-level `time` in milliseconds, not a ticker-row field.
-- PR #8 (`d88970c`) supplied the market pagination idea; this PR retains current rate limiting and `select_markets`.
+- PR #8 (`d88970c`) supplied linear market pagination; Spot forbids `limit`/`cursor`, so it uses one unpaged request. Repeated linear cursor raises `ExchangeError`.
 - PR #8's Unicode symbol change was excluded: it is separate from this spot order path.
 - No repository-wide capabilities declaration system exists; see `/home/quantus/coding/bybit-0927/PREMISE.md`.
 - Tests: `tests/exchanges/test_bybit.py` covers request signing, echo, fallback, misses, duplicate, bad IDs, ticker time, pages.
 - Contract regression: `tests/test_client_order_id_contract.py` covers Bybit async and sync twins for spot and linear.
-- Local verification: 1,157 passed / 43 live deselected; `ruff check`, `ruff format --check`, `mypy src/pycex/` passed.
+- Local verification: 1,163 passed / 43 live deselected; `ruff check`, `ruff format --check`, `mypy src/pycex/` passed.
+- Review follow-up: Bybit documents server-side filtering by `orderId`/`orderLinkId`; no live evidence of mis-filtering, so no client-side guard was added.
 - Test environment: shared venv points to another checkout; set `PYTHONPATH=src` for this worktree.
 - Trader integration still needs pycex release/pin, Bybit venue row, per-venue client ID support, and `size_unit` separation from OKX.
 - Other customer path gaps from coverage plan: coin account registration, platform venue/quote routing, web account flow, and trader secret/symbol handling.
@@ -27,3 +29,4 @@
 - Official: https://bybit-exchange.github.io/docs/v5/order/open-order
 - Official: https://bybit-exchange.github.io/docs/v5/order/order-list
 - Official: https://bybit-exchange.github.io/docs/v5/market/tickers
+- Official: https://bybit-exchange.github.io/docs/v5/market/instrument (Spot does not support pagination)

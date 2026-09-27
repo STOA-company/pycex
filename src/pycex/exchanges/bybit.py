@@ -236,16 +236,22 @@ class Bybit(BaseExchange):
         markets: list[Market] = []
         cursor = ""
         while True:
-            params = {"category": self._category, "limit": 1000}
-            if cursor:
-                params["cursor"] = cursor
+            params: dict[str, Any] = {"category": self._category}
+            # Bybit rejects limit/cursor for spot; only derivatives paginate.
+            if self._category != "spot":
+                params["limit"] = 1000
+                if cursor:
+                    params["cursor"] = cursor
             async with self._rate_limiter.request("query"):
                 data = await self._http.get("/v5/market/instruments-info", params=params)
             result = self._check(data)
             markets.extend(m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None)
-            cursor = str(result.get("nextPageCursor") or "")
-            if not cursor:
+            next_cursor = str(result.get("nextPageCursor") or "")
+            if self._category == "spot" or not next_cursor:
                 break
+            if next_cursor == cursor:
+                raise ExchangeError("bybit: instruments cursor did not advance", exchange="bybit")
+            cursor = next_cursor
         self._markets = {m.native: m for m in markets}
         return select_markets(markets, symbols)
 
@@ -512,7 +518,7 @@ def _parse_my_trade(symbol: str, t: dict[str, Any]) -> MyTrade:
 _INSUFFICIENT_BALANCE_CODES = frozenset({"110007", "110004", "110012"})
 _AUTH_CODES = frozenset({"10003", "10004"})
 _ORDER_NOT_FOUND_CODES = frozenset({"110001", "170213"})
-_DUPLICATE_ORDER_CODES = frozenset({"110072"})
+_DUPLICATE_ORDER_CODES = frozenset({"110072", "170141"})
 _RATE_LIMIT_CODES = frozenset({"10006"})
 
 
