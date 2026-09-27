@@ -1,0 +1,30 @@
+# Bybit integration pack (2026-09-27)
+
+- Scope: Bybit V5 order ID reconciliation and market metadata in pycex; no live exchange call or order was made.
+- Entry: `src/pycex/exchanges/bybit.py` (`Bybit.create_order`, `fetch_order`, `fetch_markets`, `fetch_ticker`, `_map_error`).
+- Construction: `src/pycex/factory.py:create_exchange`; CLI and MCP use that factory.
+- Shared contract: `src/pycex/base.py` accepts `client_order_id`; `src/pycex/models/order.py` stores it.
+- `create_order` validates a caller ID before HTTP, sends it as `orderLinkId` in the signed body, and returns the echoed ID (or the caller ID if echo is absent).
+- Accepted IDs are 1–36 ASCII letters, digits, `-`, or `_`; invalid IDs raise `InvalidOrderError` before HTTP.
+- `fetch_order` requires exactly one of `order_id` and `client_order_id`; it queries `/v5/order/realtime`, then `/v5/order/history` on a miss.
+- A miss in both sources raises `OrderNotFoundError`; other realtime errors propagate without a history request.
+- Bybit duplicate codes `110072` (UTA) and `170141` (Spot Trade) map to `DuplicateOrderError`.
+- After an uncertain create response, downstream callers must retry or reconcile with the same client ID; order history may lag.
+- `fetch_ticker` uses the response's top-level `time` in milliseconds.
+- PR #8 instrument pagination was absorbed: Spot sends one request without `limit` or `cursor`; linear requests pages with `limit=1000`.
+- Linear pagination raises `ExchangeError` on a repeated/cyclic cursor or after 20 pages with another cursor.
+- PR #8's unrelated Unicode symbol change was excluded.
+- `fetch_order` now raises on a full miss; previously it returned an empty `Order`.
+- The repository has no capabilities declaration interface, so none was added; the premise is recorded in the handoff `PREMISE.md`.
+- Tests: `tests/exchanges/test_bybit.py` covers Spot, signing, lookup, errors, timestamp, cursor cycle, and page cap.
+- Contract tests: `tests/test_client_order_id_contract.py` covers Bybit async/sync Spot and linear paths.
+- Local verification at `e2d66b3`: 1,165 passed, 43 live tests deselected; ruff check/format and mypy passed.
+- Shared venv points to another checkout; set `PYTHONPATH=src` when testing this worktree.
+- Trader follow-up: pin a pycex release/head, route Bybit venue and client IDs, and keep OKX-only `size_unit` handling separate.
+- Customer path follow-up: account registration, quote/venue routing, web account flow, and trader secret/symbol fixes.
+- Official create-order: https://bybit-exchange.github.io/docs/v5/order/create-order
+- Official errors: https://bybit-exchange.github.io/docs/v5/error
+- Official realtime lookup: https://bybit-exchange.github.io/docs/v5/order/open-order
+- Official history lookup: https://bybit-exchange.github.io/docs/v5/order/order-list
+- Official instruments: https://bybit-exchange.github.io/docs/v5/market/instrument
+- Official ticker: https://bybit-exchange.github.io/docs/v5/market/tickers
