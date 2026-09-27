@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-27
+
+### Added
+
+- Upbit: pin identifier signing compatibility with a regression test for the query hash
+  behavior used by signed requests (#24).
+- Bybit: support `client_order_id` as `orderLinkId` on order creation and lookup, and
+  reconcile lookups across realtime orders and order history. Bybit duplicate codes
+  `110072` and `170141` map to `DuplicateOrderError`; ticker timestamps use the response
+  time; market pagination guards against repeated cursors (#25).
+
+### Changed
+
+- Bybit: `fetch_order` now raises `OrderNotFoundError` when the order is missing from
+  both realtime orders and order history (#25).
+
 ## [0.4.4] - 2026-09-26
 
 ### Added
