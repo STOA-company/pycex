@@ -74,7 +74,7 @@ def order_payload(cls, *, ack=False):
 
 
 def exchange(cls, *, market_type="linear"):
-    credentials = {"passphrase": "synthetic-pass"} if cls is OKX else {}
+    credentials = {"passphrase": "synthetic-pass"} if cls in (OKX, Bitget) else {}
     ex = cls(api_key="synthetic-key", secret="synthetic-secret", market_type=market_type, **credentials)
     seen = []
 

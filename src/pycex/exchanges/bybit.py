@@ -235,6 +235,8 @@ class Bybit(BaseExchange):
         # PR #8: collect all instrument pages so cached trading rules cover the venue.
         markets: list[Market] = []
         cursor = ""
+        seen_cursors: set[str] = set()
+        page_count = 0
         while True:
             params: dict[str, Any] = {"category": self._category}
             # Bybit rejects limit/cursor for spot; only derivatives paginate.
@@ -245,12 +247,16 @@ class Bybit(BaseExchange):
             async with self._rate_limiter.request("query"):
                 data = await self._http.get("/v5/market/instruments-info", params=params)
             result = self._check(data)
+            page_count += 1
             markets.extend(m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None)
             next_cursor = str(result.get("nextPageCursor") or "")
             if self._category == "spot" or not next_cursor:
                 break
-            if next_cursor == cursor:
-                raise ExchangeError("bybit: instruments cursor did not advance", exchange="bybit")
+            if next_cursor in seen_cursors:
+                raise ExchangeError("bybit: instruments cursor repeated", exchange="bybit")
+            if page_count >= 20:
+                raise ExchangeError("bybit: instruments page limit exceeded", exchange="bybit")
+            seen_cursors.add(next_cursor)
             cursor = next_cursor
         self._markets = {m.native: m for m in markets}
         return select_markets(markets, symbols)

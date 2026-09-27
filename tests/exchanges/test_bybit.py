@@ -247,9 +247,27 @@ async def test_fetch_markets_repeated_cursor_stops(httpx_mock: HTTPXMock) -> Non
     httpx_mock.add_response(json={"retCode": 0, "result": {"list": [], "nextPageCursor": "next"}})
     httpx_mock.add_response(json={"retCode": 0, "result": {"list": [], "nextPageCursor": "next"}})
     async with Bybit(api_key="k", secret=SECRET, market_type="linear") as ex:
-        with pytest.raises(ExchangeError, match="cursor did not advance"):
+        with pytest.raises(ExchangeError, match="cursor repeated"):
             await ex.fetch_markets()
     assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_fetch_markets_cursor_cycle_stops(httpx_mock: HTTPXMock) -> None:
+    for cursor in ("first", "second", "first"):
+        httpx_mock.add_response(json={"retCode": 0, "result": {"list": [], "nextPageCursor": cursor}})
+    async with Bybit(api_key="k", secret=SECRET, market_type="linear") as ex:
+        with pytest.raises(ExchangeError, match="cursor repeated"):
+            await ex.fetch_markets()
+    assert len(httpx_mock.get_requests()) == 3
+
+
+async def test_fetch_markets_page_limit_stops(httpx_mock: HTTPXMock) -> None:
+    for page in range(20):
+        httpx_mock.add_response(json={"retCode": 0, "result": {"list": [], "nextPageCursor": f"page-{page}"}})
+    async with Bybit(api_key="k", secret=SECRET, market_type="linear") as ex:
+        with pytest.raises(ExchangeError, match="page limit exceeded"):
+            await ex.fetch_markets()
+    assert len(httpx_mock.get_requests()) == 20
 
 
 # ── fetch_my_trades ──
