@@ -420,9 +420,7 @@ async def test_fetch_order_rejects_unsignable_identifier_without_request(httpx_m
     await ex.close()
 
 
-@pytest.mark.parametrize(
-    "ok", ["A-b_9.x", "order.2026-09-26_01", "x" * 64, "q" + "a" * 31, "qr" + "b" * 30]
-)
+@pytest.mark.parametrize("ok", ["A-b_9.x", "order.2026-09-26_01", "x" * 64, "q" + "a" * 31, "qr" + "b" * 30])
 async def test_urlsafe_identifier_signs_identically_encoded_or_not(httpx_mock: HTTPXMock, ok: str) -> None:
     httpx_mock.add_response(method="POST", json=_order_response())
     httpx_mock.add_response(method="GET", json=_order_response(identifier=ok))
