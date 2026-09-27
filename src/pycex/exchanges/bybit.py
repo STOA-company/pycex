@@ -41,6 +41,7 @@ this adapter, matching the brief.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlencode
@@ -50,9 +51,10 @@ from pycex.base import BaseExchange
 from pycex.constants import BYBIT_BASE, BYBIT_REFERRAL_CODE, BYBIT_TESTNET, CANDLE_VENUES, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     ExchangeError,
     InsufficientBalanceError,
-    NotSupportedError,
+    InvalidOrderError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -81,6 +83,8 @@ _TIMEFRAME_MAP = {
     "1d": "D",
     "1w": "W",
 }
+
+_CLIENT_ORDER_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,36}\Z")
 
 
 class Bybit(BaseExchange):
@@ -190,7 +194,7 @@ class Bybit(BaseExchange):
         async with self._rate_limiter.request("query"):
             data = await self._http.get("/v5/market/tickers", params=params)
         result = self._check(data)
-        return _parse_ticker(symbol, result["list"][0])
+        return _parse_ticker(symbol, result["list"][0], timestamp=int(data.get("time", 0) or 0))
 
     async def fetch_order_book(self, symbol: str, *, limit: int = 20) -> OrderBook:
         native = self.to_native(symbol)
@@ -228,11 +232,20 @@ class Bybit(BaseExchange):
         return [_parse_trade(symbol, t) for t in result.get("list", [])]
 
     async def fetch_markets(self, *, symbols: Sequence[str] | None = None) -> list[Market]:
-        params = {"category": self._category}
-        async with self._rate_limiter.request("query"):
-            data = await self._http.get("/v5/market/instruments-info", params=params)
-        result = self._check(data)
-        markets = [m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None]
+        # PR #8: collect all instrument pages so cached trading rules cover the venue.
+        markets: list[Market] = []
+        cursor = ""
+        while True:
+            params = {"category": self._category, "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get("/v5/market/instruments-info", params=params)
+            result = self._check(data)
+            markets.extend(m for d in result.get("list", []) if (m := _parse_market(d, self.market_type)) is not None)
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                break
         self._markets = {m.native: m for m in markets}
         return select_markets(markets, symbols)
 
@@ -258,7 +271,7 @@ class Bybit(BaseExchange):
         client_order_id: str | None = None,
     ) -> Order:
         if client_order_id is not None:
-            raise NotSupportedError("This adapter does not support client_order_id")
+            _validated_client_order_id(client_order_id)
         native = self.to_native(symbol)
         body: dict[str, Any] = {
             "category": self._category,
@@ -270,6 +283,8 @@ class Bybit(BaseExchange):
         if price is not None:
             body["price"] = str(price)
             body["timeInForce"] = "GTC"
+        if client_order_id is not None:
+            body["orderLinkId"] = client_order_id
         async with self._rate_limiter.request("order"):
             body_str = json.dumps(body)
             data = await self._http.post_raw(
@@ -278,6 +293,7 @@ class Bybit(BaseExchange):
         result = self._check(data)
         return Order(
             id=result.get("orderId", ""),
+            client_order_id=result.get("orderLinkId") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
@@ -298,17 +314,26 @@ class Bybit(BaseExchange):
         return Order(id=result.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
-        if client_order_id is not None or order_id is None:
-            raise NotSupportedError("This adapter requires an exchange order ID")
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="bybit")
+        if client_order_id is not None:
+            _validated_client_order_id(client_order_id)
         native = self.to_native(symbol)
-        params = {"category": self._category, "symbol": native, "orderId": order_id}
-        async with self._rate_limiter.request("query", group="private"):
-            full_path, headers = self._signed_get_request("/v5/order/realtime", params)
-            data = await self._http.get(full_path, headers=headers)
-        result = self._check(data)
-        if result.get("list"):
-            return _parse_order(symbol, result["list"][0])
-        return Order(id=order_id, symbol=symbol, side="", type="", amount=0)
+        lookup = {"orderLinkId": client_order_id} if client_order_id else {"orderId": order_id}
+        params = {"category": self._category, "symbol": native, **lookup}
+        for path in ("/v5/order/realtime", "/v5/order/history"):
+            async with self._rate_limiter.request("query", group="private"):
+                full_path, headers = self._signed_get_request(path, params)
+                try:
+                    data = await self._http.get(full_path, headers=headers)
+                    result = self._check(data)
+                except OrderNotFoundError:
+                    if path.endswith("/history"):
+                        raise
+                    continue
+            if result.get("list"):
+                return _parse_order(symbol, result["list"][0])
+        raise OrderNotFoundError("bybit: order not found", exchange="bybit")
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         params: dict[str, Any] = {"category": self._category}
@@ -344,7 +369,7 @@ class Bybit(BaseExchange):
 # ── Parsers ──
 
 
-def _parse_ticker(symbol: str, d: dict[str, Any]) -> Ticker:
+def _parse_ticker(symbol: str, d: dict[str, Any], *, timestamp: int = 0) -> Ticker:
     return Ticker(
         symbol=symbol,
         last=float(d.get("lastPrice", 0)),
@@ -354,6 +379,7 @@ def _parse_ticker(symbol: str, d: dict[str, Any]) -> Ticker:
         low=float(d.get("lowPrice24h", 0)),
         volume=float(d.get("volume24h", 0)),
         quote_volume=float(d.get("turnover24h", 0)),
+        timestamp=timestamp,
         raw=d,
     )
 
@@ -452,6 +478,7 @@ def _parse_balance(result: dict[str, Any], raw: dict[str, Any]) -> Balance:
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     return Order(
         id=d.get("orderId", ""),
+        client_order_id=d.get("orderLinkId") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("orderType", "").lower(),
@@ -485,6 +512,7 @@ def _parse_my_trade(symbol: str, t: dict[str, Any]) -> MyTrade:
 _INSUFFICIENT_BALANCE_CODES = frozenset({"110007", "110004", "110012"})
 _AUTH_CODES = frozenset({"10003", "10004"})
 _ORDER_NOT_FOUND_CODES = frozenset({"110001", "170213"})
+_DUPLICATE_ORDER_CODES = frozenset({"110072"})
 _RATE_LIMIT_CODES = frozenset({"10006"})
 
 
@@ -495,9 +523,17 @@ def _map_error(code: str, msg: str) -> PyCexError:
         return AuthenticationError(msg)
     if code in _ORDER_NOT_FOUND_CODES:
         return OrderNotFoundError(msg, code=code, exchange="bybit")
+    if code in _DUPLICATE_ORDER_CODES:
+        return DuplicateOrderError(msg, code=code, exchange="bybit")
     if code in _RATE_LIMIT_CODES:
         return RateLimitError(msg, code=code, exchange="bybit")
     return ExchangeError(msg, code=code, exchange="bybit")
+
+
+def _validated_client_order_id(value: str) -> str:
+    if not _CLIENT_ORDER_ID_RE.fullmatch(value):
+        raise InvalidOrderError("bybit: client_order_id must be 1-36 ASCII letters, digits, - or _", exchange="bybit")
+    return value
 
 
 def _error_mapper(status: int, data: dict[str, Any]) -> PyCexError | None:

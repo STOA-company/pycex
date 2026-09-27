@@ -16,10 +16,10 @@ import httpx
 import pytest
 
 from pycex import OKX, Binance, Bitget, Bybit
-from pycex.exceptions import InvalidOrderError, NotSupportedError
+from pycex.exceptions import InvalidOrderError
 
 CID = "SyntheticOrder42"
-CLASSES = [Binance, Bitget, OKX]
+CLASSES = [Binance, Bitget, OKX, Bybit]
 SYMBOLS = {"spot": "BTC/USDT", "linear": "BTC/USDT:USDT"}
 
 
@@ -52,6 +52,9 @@ def order_payload(cls, *, ack=False):
             }
         )
         return {"code": "00000", "msg": "success", "data": row}
+    if cls is Bybit:
+        row = {"orderId": "42", "orderLinkId": CID} if ack else {"orderId": "42", "orderLinkId": CID, "qty": "2"}
+        return {"retCode": 0, "result": row if ack else {"list": [row]}}
     row = (
         {"ordId": "42", "clOrdId": CID, "sCode": "0", "sMsg": ""}
         if ack
@@ -71,7 +74,7 @@ def order_payload(cls, *, ack=False):
 
 
 def exchange(cls, *, market_type="linear"):
-    credentials = {} if cls is Binance else {"passphrase": "synthetic-pass"}
+    credentials = {"passphrase": "synthetic-pass"} if cls is OKX else {}
     ex = cls(api_key="synthetic-key", secret="synthetic-secret", market_type=market_type, **credentials)
     seen = []
 
@@ -95,6 +98,14 @@ def assert_signed(cls, request):
         unsigned, signature = request.url.query.decode().rsplit("&signature=", 1)
         assert signature == hmac.new(secret, unsigned.encode(), hashlib.sha256).hexdigest()
         assert request.headers["X-MBX-APIKEY"] == "synthetic-key"
+    elif cls is Bybit:
+        message = (
+            request.headers["X-BAPI-TIMESTAMP"]
+            + request.headers["X-BAPI-API-KEY"]
+            + request.headers["X-BAPI-RECV-WINDOW"]
+            + (request.content.decode() if request.method == "POST" else request.url.query.decode())
+        )
+        assert request.headers["X-BAPI-SIGN"] == hmac.new(secret, message.encode(), hashlib.sha256).hexdigest()
     else:
         prefix = "OK-ACCESS-" if cls is OKX else "ACCESS-"
         message = (
@@ -110,7 +121,7 @@ def assert_signed(cls, request):
 @pytest.mark.parametrize("market_type", ["spot", "linear"])
 @pytest.mark.parametrize(
     "cls,cid_field",
-    [(Binance, "newClientOrderId"), (Bitget, "clientOid"), (OKX, "clOrdId")],
+    [(Binance, "newClientOrderId"), (Bitget, "clientOid"), (OKX, "clOrdId"), (Bybit, "orderLinkId")],
 )
 async def test_create_sends_client_order_id_signed_and_echoes_it(cls, cid_field, market_type):
     ex, seen = exchange(cls, market_type=market_type)
@@ -126,7 +137,9 @@ async def test_create_sends_client_order_id_signed_and_echoes_it(cls, cid_field,
 
 
 @pytest.mark.parametrize("market_type", ["spot", "linear"])
-@pytest.mark.parametrize("cls,cid_field", [(Binance, "newClientOrderId"), (Bitget, "clientOid"), (OKX, "clOrdId")])
+@pytest.mark.parametrize(
+    "cls,cid_field", [(Binance, "newClientOrderId"), (Bitget, "clientOid"), (OKX, "clOrdId"), (Bybit, "orderLinkId")]
+)
 async def test_create_without_client_order_id_sends_no_key(cls, cid_field, market_type):
     ex, seen = exchange(cls, market_type=market_type)
     try:
@@ -140,7 +153,12 @@ async def test_create_without_client_order_id_sends_no_key(cls, cid_field, marke
 @pytest.mark.parametrize("market_type", ["spot", "linear"])
 @pytest.mark.parametrize(
     "cls,lookup,legacy",
-    [(Binance, "origClientOrderId", "orderId"), (Bitget, "clientOid", "orderId"), (OKX, "clOrdId", "ordId")],
+    [
+        (Binance, "origClientOrderId", "orderId"),
+        (Bitget, "clientOid", "orderId"),
+        (OKX, "clOrdId", "ordId"),
+        (Bybit, "orderLinkId", "orderId"),
+    ],
 )
 async def test_fetch_by_client_order_id_and_by_legacy_id(cls, lookup, legacy, market_type):
     ex, seen = exchange(cls, market_type=market_type)
@@ -184,21 +202,3 @@ def test_sync_twins_forward_client_order_id(cls):
         assert [r.method for r in seen].count("POST") == 2 and seen[-1].method == "GET"
     finally:
         ex.close_sync()
-
-
-@pytest.mark.parametrize("cls", [Bybit])
-async def test_other_exchanges_reject_client_order_id_without_request(cls):
-    ex = cls(api_key="k", secret="s")
-    seen = []
-    ex._http.set_transport_factory(lambda: httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(500)))
-    symbol = "BTC/USDT" if cls is Bybit else "BTC/KRW"
-    try:
-        with pytest.raises(NotSupportedError):
-            await ex.create_order(symbol, "buy", "market", 1, client_order_id=CID)
-        with pytest.raises(NotSupportedError):
-            await ex.fetch_order(None, symbol, client_order_id=CID)
-        with pytest.raises(NotSupportedError):
-            await ex.fetch_order(None, symbol)
-        assert seen == []
-    finally:
-        await ex.close()

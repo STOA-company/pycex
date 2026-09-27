@@ -19,7 +19,9 @@ from pytest_httpx import HTTPXMock
 
 from pycex.exceptions import (
     AuthenticationError,
+    DuplicateOrderError,
     InsufficientBalanceError,
+    InvalidOrderError,
     OrderNotFoundError,
     RateLimitError,
     SymbolNotFoundError,
@@ -225,6 +227,20 @@ async def test_fetch_markets_linear_populates_cache_and_symbol(httpx_mock: HTTPX
     await ex.close()
 
 
+async def test_fetch_markets_uses_next_page_cursor(httpx_mock: HTTPXMock) -> None:
+    def row(base: str) -> dict[str, object]:
+        return {"symbol": f"{base}USDT", "baseCoin": base, "quoteCoin": "USDT", "status": "Trading"}
+
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [row("BTC")], "nextPageCursor": "next"}})
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [row("ETH")], "nextPageCursor": ""}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        markets = await ex.fetch_markets()
+        assert [market.native for market in markets] == ["BTCUSDT", "ETHUSDT"]
+    requests = httpx_mock.get_requests()
+    assert requests[0].url.params["limit"] == "1000"
+    assert requests[1].url.params["cursor"] == "next"
+
+
 # ── fetch_my_trades ──
 
 
@@ -371,7 +387,104 @@ async def test_create_order_sends_content_type_and_body(httpx_mock: HTTPXMock) -
     assert order.price == 50000.0
     assert order.side == "buy"
     assert order.type == "limit"
+    assert "orderLinkId" not in body  # Existing callers retain the no-key request shape.
+    assert order.client_order_id is None
     await ex.close()
+
+
+@pytest.mark.parametrize("client_id", ["q" + "a" * 31, "qr" + "b" * 30, "Ab_9-", "x" * 36])
+async def test_create_order_sends_valid_client_id_and_reads_echo(httpx_mock: HTTPXMock, client_id: str) -> None:
+    httpx_mock.add_response(json={"retCode": 0, "result": {"orderId": "o1", "orderLinkId": client_id}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        order = await ex.create_order("BTC/USDT", "buy", "limit", 0.001, 50000, client_order_id=client_id)
+    request = httpx_mock.get_request()
+    assert json_lib.loads(request.content)["orderLinkId"] == client_id
+    _assert_valid_post_signature(request)
+    assert order.id == "o1" and order.client_order_id == client_id
+
+
+async def test_create_order_retains_requested_id_when_ack_omits_echo(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 0, "result": {"orderId": "o1"}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        order = await ex.create_order("BTC/USDT", "buy", "limit", 0.001, 50000, client_order_id="q1")
+    assert order.client_order_id == "q1"
+
+
+@pytest.mark.parametrize("bad", ["", "x" * 37, "has space", "a.b", "한글", "é"])
+async def test_invalid_client_id_is_rejected_before_network(httpx_mock: HTTPXMock, bad: str) -> None:
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        with pytest.raises(InvalidOrderError):
+            await ex.create_order("BTC/USDT", "buy", "limit", 0.001, 50000, client_order_id=bad)
+        with pytest.raises(InvalidOrderError):
+            await ex.fetch_order(None, "BTC/USDT", client_order_id=bad)
+    assert httpx_mock.get_requests() == []
+
+
+async def test_duplicate_client_id_maps_to_reconciliation_error(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 110072, "retMsg": "OrderLinkedID is duplicate", "result": {}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        with pytest.raises(DuplicateOrderError) as error:
+            await ex.create_order("BTC/USDT", "buy", "limit", 0.001, 50000, client_order_id="q1")
+    assert error.value.code == "110072"
+
+
+async def test_fetch_order_by_client_id_falls_back_to_history(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": []}})
+    httpx_mock.add_response(
+        json={"retCode": 0, "result": {"list": [{"orderId": "o1", "orderLinkId": "q1", "qty": "0.01"}]}}
+    )
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        order = await ex.fetch_order(None, "BTC/USDT", client_order_id="q1")
+    requests = httpx_mock.get_requests()
+    assert [request.url.path for request in requests] == ["/v5/order/realtime", "/v5/order/history"]
+    for request in requests:
+        assert request.url.params["orderLinkId"] == "q1"
+        assert "orderId" not in request.url.params
+        _assert_valid_get_signature(request)
+    assert order.id == "o1" and order.client_order_id == "q1"
+
+
+async def test_fetch_order_realtime_hit_skips_history(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [{"orderId": "o1", "qty": "0.01"}]}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        order = await ex.fetch_order("o1", "BTC/USDT")
+    assert order.id == "o1"
+    assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_fetch_order_not_found_after_both_sources(httpx_mock: HTTPXMock) -> None:
+    for _ in range(2):
+        httpx_mock.add_response(json={"retCode": 0, "result": {"list": []}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        with pytest.raises(OrderNotFoundError):
+            await ex.fetch_order("missing", "BTC/USDT")
+    assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_fetch_order_realtime_not_found_code_uses_history(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 110001, "retMsg": "Order does not exist", "result": {}})
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [{"orderId": "o1", "qty": "0.01"}]}})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        order = await ex.fetch_order("o1", "BTC/USDT")
+    assert order.id == "o1"
+    assert httpx_mock.get_requests()[-1].url.path == "/v5/order/history"
+
+
+@pytest.mark.parametrize(("order_id", "client_id"), [(None, None), ("o1", "q1")])
+async def test_fetch_order_requires_exactly_one_id(
+    httpx_mock: HTTPXMock, order_id: str | None, client_id: str | None
+) -> None:
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        with pytest.raises(InvalidOrderError):
+            await ex.fetch_order(order_id, "BTC/USDT", client_order_id=client_id)
+    assert httpx_mock.get_requests() == []
+
+
+async def test_ticker_uses_response_time(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [{"lastPrice": "2"}]}, "time": 1700000000000})
+    async with Bybit(api_key="k", secret=SECRET) as ex:
+        ticker = await ex.fetch_ticker("BTC/USDT")
+    assert ticker.timestamp == 1700000000000
 
 
 async def test_create_order_signature_matches_verbatim_wire_body(httpx_mock: HTTPXMock) -> None:
