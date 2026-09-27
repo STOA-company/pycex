@@ -18,7 +18,7 @@
 - No repository-wide capabilities declaration system exists; see `/home/quantus/coding/bybit-0927/PREMISE.md`.
 - Tests: `tests/exchanges/test_bybit.py` covers request signing, echo, fallback, misses, duplicate, bad IDs, ticker time, pages.
 - Contract regression: `tests/test_client_order_id_contract.py` covers Bybit async and sync twins for spot and linear.
-- Local verification: 1,156 passed / 43 live deselected; `ruff check`, `ruff format --check`, `mypy src/pycex/` passed.
+- Local verification: 1,157 passed / 43 live deselected; `ruff check`, `ruff format --check`, `mypy src/pycex/` passed.
 - Test environment: shared venv points to another checkout; set `PYTHONPATH=src` for this worktree.
 - Trader integration still needs pycex release/pin, Bybit venue row, per-venue client ID support, and `size_unit` separation from OKX.
 - Other customer path gaps from coverage plan: coin account registration, platform venue/quote routing, web account flow, and trader secret/symbol handling.
