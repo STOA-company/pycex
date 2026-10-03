@@ -303,7 +303,7 @@ class OKX(BaseExchange):
         result = self._check(data)
         return _parse_balance(result, data)
 
-    async def fetch_account_config(self) -> dict[str, Any]:
+    async def fetch_account_config(self, *, strict: bool = False) -> dict[str, Any]:
         """``GET /api/v5/account/config`` — the account's own settings row.
 
         Caches ``acctLv`` for :meth:`_spot_td_mode`. Also carries ``posMode``
@@ -314,6 +314,8 @@ class OKX(BaseExchange):
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, headers=self._auth_headers("GET", path))
         result = self._check(data)
+        if strict and (data.get("code") != "0" or not isinstance(data.get("data"), list)):
+            raise ExchangeError("okx: incomplete account configuration snapshot", exchange="okx")
         row: dict[str, Any] = result[0] if result else {}
         level = str(row.get("acctLv") or "")
         if level:
@@ -374,6 +376,8 @@ class OKX(BaseExchange):
             data = await self._http.get(path, params=query, headers=self._auth_headers("GET", full_path))
         result = self._check(data)
         if include_flat:
+            if data.get("code") != "0" or not isinstance(data.get("data"), list):
+                raise ExchangeError("okx: incomplete position snapshot", exchange="okx")
             # A caller measuring flatness must not turn malformed rows into zero.
             for row in result:
                 try:
@@ -420,9 +424,12 @@ class OKX(BaseExchange):
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, params=query,
                                         headers=self._auth_headers("GET", full_path))
-        return self._check(data)
+        result = self._check(data)
+        if data.get("code") != "0" or not isinstance(data.get("data"), list):
+            raise ExchangeError("okx: incomplete leverage snapshot", exchange="okx")
+        return result
 
-    async def set_leverage(self, symbol: str, lever: float, mgn_mode: str = "cross") -> dict[str, Any]:
+    async def set_leverage(self, symbol: str, lever: float, mgn_mode: str = "cross", *, strict: bool = False) -> dict[str, Any]:
         """``POST /api/v5/account/set-leverage`` for one SWAP instrument.
 
         Rejects — before the request goes out — what OKX cannot accept: a spot
@@ -445,6 +452,8 @@ class OKX(BaseExchange):
         async with self._rate_limiter.request("query"):
             data = await self._http.post_raw(path, body=body_str, headers=self._auth_headers("POST", path, body_str))
         result = self._check(data)
+        if strict and (data.get("code") != "0" or not isinstance(data.get("data"), list)):
+            raise ExchangeError("okx: incomplete leverage setting response", exchange="okx")
         row: dict[str, Any] = result[0] if result else {}
         return row
 
@@ -586,7 +595,7 @@ class OKX(BaseExchange):
             return _parse_order(symbol, result[0])
         return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
 
-    async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
+    async def fetch_open_orders(self, symbol: str | None = None, *, strict: bool = False) -> list[Order]:
         params: dict[str, Any] = {}
         path = "/api/v5/trade/orders-pending"
         native = self.to_native(symbol) if symbol else None
@@ -598,6 +607,8 @@ class OKX(BaseExchange):
                 "/api/v5/trade/orders-pending", params=params or None, headers=self._auth_headers("GET", path)
             )
         result = self._check(data)
+        if strict and (data.get("code") != "0" or not isinstance(data.get("data"), list)):
+            raise ExchangeError("okx: incomplete pending order snapshot", exchange="okx")
         return [_parse_order(self.from_native(o.get("instId", "")), o) for o in result]
 
     async def fetch_my_trades(

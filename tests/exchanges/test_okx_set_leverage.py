@@ -89,7 +89,7 @@ def test_set_leverage_has_a_sync_twin(httpx_mock: HTTPXMock) -> None:
                                                          "mgnMode": "isolated", "posSide": "net"}]})
     httpx_mock.add_response(json=_ACK)
     ex = _swap()
-    assert ex.fetch_account_config_sync() == {"acctLv": "2", "posMode": "net_mode"}
+    assert ex.fetch_account_config_sync(strict=True) == {"acctLv": "2", "posMode": "net_mode"}
     assert ex.fetch_leverage_sync("BTC/USDT:USDT", "isolated") == [
         {"instId": "BTC-USDT-SWAP", "lever": "3", "mgnMode": "isolated", "posSide": "net"}]
     requests = httpx_mock.get_requests()
@@ -97,7 +97,23 @@ def test_set_leverage_has_a_sync_twin(httpx_mock: HTTPXMock) -> None:
     assert dict(requests[1].url.params) == {"instId": "BTC-USDT-SWAP", "mgnMode": "isolated"}
     for request in requests:
         _assert_valid_signature(request)
-    assert ex.set_leverage_sync("BTC/USDT:USDT", 3, "isolated")["lever"] == "3"
+    assert ex.set_leverage_sync("BTC/USDT:USDT", 3, "isolated", strict=True)["lever"] == "3"
+    httpx_mock.add_response(json={"code": "0", "data": []})
+    assert ex.fetch_open_orders_sync("BTC/USDT:USDT", strict=True) == []
+    _assert_valid_signature(httpx_mock.get_requests()[-1])
+    httpx_mock.add_response(json={"data": [{"acctLv": "2", "posMode": "net_mode"}]})
+    with pytest.raises(ExchangeError, match="incomplete account configuration"):
+        ex.fetch_account_config_sync(strict=True)
+    httpx_mock.add_response(json={"code": "0"})
+    with pytest.raises(ExchangeError, match="incomplete leverage snapshot"):
+        ex.fetch_leverage_sync("BTC/USDT:USDT", "isolated")
+    httpx_mock.add_response(json={"code": "0"})
+    with pytest.raises(ExchangeError, match="incomplete pending order"):
+        ex.fetch_open_orders_sync("BTC/USDT:USDT", strict=True)
+    httpx_mock.add_response(json={"data": _ACK["data"]})
+    with pytest.raises(ExchangeError, match="incomplete leverage setting"):
+        ex.set_leverage_sync("BTC/USDT:USDT", 3, "isolated", strict=True)
+    assert httpx_mock.get_requests()[-1].method == "POST"
 
 
 # ── 우회 시도 ──

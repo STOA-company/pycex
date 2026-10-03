@@ -104,6 +104,12 @@ async def test_fetch_positions_short_cross_row_end_to_end(httpx_mock: HTTPXMock)
     httpx_mock.add_response(json={"code": "0", "data": [{"instId": "ETH-USDT-SWAP", "posSide": "net"}]})
     with pytest.raises(ExchangeError, match="incomplete position snapshot"):
         await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
+    httpx_mock.add_response(json={"code": "0"})
+    with pytest.raises(ExchangeError, match="incomplete position snapshot"):
+        await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
+    httpx_mock.add_response(json={"data": [_row(pos="0")]})
+    with pytest.raises(ExchangeError, match="incomplete position snapshot"):
+        await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
     httpx_mock.add_response(json={"code": "0", "data": [_row(pos="0")]})
     (flat,) = await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
     assert flat.raw["instId"] == "ETH-USDT-SWAP" and flat.raw["pos"] == "0"
