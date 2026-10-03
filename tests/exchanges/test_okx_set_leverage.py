@@ -82,8 +82,21 @@ async def test_set_leverage_rejection_is_not_swallowed(httpx_mock: HTTPXMock) ->
 
 
 def test_set_leverage_has_a_sync_twin(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(url="https://www.okx.com/api/v5/account/config",
+                            json={"code": "0", "data": [{"acctLv": "2", "posMode": "net_mode"}]})
+    httpx_mock.add_response(url="https://www.okx.com/api/v5/account/leverage-info?instId=BTC-USDT-SWAP&mgnMode=isolated",
+                            json={"code": "0", "data": [{"instId": "BTC-USDT-SWAP", "lever": "3",
+                                                         "mgnMode": "isolated", "posSide": "net"}]})
     httpx_mock.add_response(json=_ACK)
     ex = _swap()
+    assert ex.fetch_account_config_sync() == {"acctLv": "2", "posMode": "net_mode"}
+    assert ex.fetch_leverage_sync("BTC/USDT:USDT", "isolated") == [
+        {"instId": "BTC-USDT-SWAP", "lever": "3", "mgnMode": "isolated", "posSide": "net"}]
+    requests = httpx_mock.get_requests()
+    assert [request.method for request in requests] == ["GET", "GET"]
+    assert dict(requests[1].url.params) == {"instId": "BTC-USDT-SWAP", "mgnMode": "isolated"}
+    for request in requests:
+        _assert_valid_signature(request)
     assert ex.set_leverage_sync("BTC/USDT:USDT", 3, "isolated")["lever"] == "3"
 
 

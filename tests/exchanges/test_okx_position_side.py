@@ -16,6 +16,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from pycex.exchanges.okx import OKX, _parse_position
+from pycex.exceptions import ExchangeError
 
 
 def _row(**kw: object) -> dict:
@@ -97,6 +98,14 @@ async def test_fetch_positions_short_cross_row_end_to_end(httpx_mock: HTTPXMock)
         }
     )
     ex = OKX(api_key="k", secret="s", passphrase="p", market_type="linear")
-    (p,) = await ex.fetch_positions()
+    (p,) = await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
     assert (p.side, p.amount, p.margin_mode) == ("short", 0.04, "cross")
+    assert p.raw["instId"] == "ETH-USDT-SWAP"
+    httpx_mock.add_response(json={"code": "0", "data": [{"instId": "ETH-USDT-SWAP", "posSide": "net"}]})
+    with pytest.raises(ExchangeError, match="incomplete position snapshot"):
+        await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
+    httpx_mock.add_response(json={"code": "0", "data": [_row(pos="0")]})
+    (flat,) = await ex.fetch_positions(["ETH/USDT:USDT"], include_flat=True)
+    assert flat.raw["instId"] == "ETH-USDT-SWAP" and flat.raw["pos"] == "0"
+    assert (flat.side, flat.amount) == ("flat", 0.0)
     await ex.close()

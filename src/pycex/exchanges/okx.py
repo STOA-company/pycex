@@ -364,7 +364,7 @@ class OKX(BaseExchange):
                     return float(detail.get("availBal", 0) or 0)
         return 0.0
 
-    async def fetch_positions(self, symbols: list[str] | None = None) -> list[Position]:
+    async def fetch_positions(self, symbols: list[str] | None = None, *, include_flat: bool = False) -> list[Position]:
         if self.market_type != "linear":
             return await super().fetch_positions(symbols)
         path = "/api/v5/account/positions"
@@ -373,10 +373,22 @@ class OKX(BaseExchange):
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, params=query, headers=self._auth_headers("GET", full_path))
         result = self._check(data)
+        if include_flat:
+            # A caller measuring flatness must not turn malformed rows into zero.
+            for row in result:
+                try:
+                    valid = (isinstance(row, dict) and isinstance(row.get("instId"), str)
+                             and bool(row["instId"]) and "pos" in row
+                             and not isinstance(row["pos"], bool)
+                             and math.isfinite(float(row["pos"])))
+                except (TypeError, ValueError, OverflowError):
+                    valid = False
+                if not valid:
+                    raise ExchangeError("okx: incomplete position snapshot", exchange="okx")
         positions = [
             _parse_position(self.from_native(str(p.get("instId", ""))), p)
             for p in result
-            if float(p.get("pos", 0) or 0) != 0
+            if include_flat or float(p.get("pos", 0) or 0) != 0
         ]
         if symbols is not None:
             wanted = set(symbols)
@@ -391,6 +403,24 @@ class OKX(BaseExchange):
             data = await self._http.get("/api/v5/public/funding-rate", params={"instId": native})
         result = self._check(data)
         return _parse_funding(symbol, result[0] if result else {})
+
+    async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
+        """GET leverage-info; preserves native instrument/mode/side binding.
+
+        This is the existing Trader get_leverage read, not a settings mutation.
+        An empty/mismatched response is not a default leverage.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("okx: leverage settings require a SWAP instrument")
+        if mgn_mode not in ("isolated", "cross"):
+            raise InvalidOrderError("okx: unknown margin mode", code="mgnMode", exchange="okx")
+        path = "/api/v5/account/leverage-info"
+        query = {"instId": self.to_native(symbol), "mgnMode": mgn_mode}
+        full_path = f"{path}?{urlencode(query)}"
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get(path, params=query,
+                                        headers=self._auth_headers("GET", full_path))
+        return self._check(data)
 
     async def set_leverage(self, symbol: str, lever: float, mgn_mode: str = "cross") -> dict[str, Any]:
         """``POST /api/v5/account/set-leverage`` for one SWAP instrument.

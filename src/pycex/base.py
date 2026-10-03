@@ -36,6 +36,8 @@ _SYNC_TARGETS = (
     "fetch_positions",
     "fetch_funding_rate",
     "set_leverage",
+    "fetch_leverage",
+    "fetch_account_config",
     "fetch_available_balance",
 )
 
@@ -133,7 +135,9 @@ class BaseExchange(ABC):
         def fetch_my_trades_sync(
             self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
         ) -> list[MyTrade]: ...
-        def fetch_positions_sync(self, symbols: list[str] | None = None) -> list[Position]: ...
+        def fetch_positions_sync(self, symbols: list[str] | None = None, **kwargs) -> list[Position]: ...
+        def fetch_leverage_sync(self, symbol: str, mgn_mode: str = "isolated") -> list[dict]: ...
+        def fetch_account_config_sync(self) -> dict: ...
         def fetch_funding_rate_sync(self, symbol: str) -> FundingRate: ...
         def set_leverage_sync(self, symbol: str, lever: float, mgn_mode: str = "cross") -> dict[str, Any]: ...
         def fetch_available_balance_sync(self, asset: str) -> float: ...
@@ -471,6 +475,13 @@ class BaseExchange(ABC):
 
     async def fetch_funding_rate(self, symbol: str) -> FundingRate:
         raise NotSupportedError(f"{self.name}:{self.market_type} has no funding rate")
+
+    async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
+        """Read instrument leverage independently of an open position."""
+        raise NotSupportedError(f"{self.name}:{self.market_type} has no leverage settings")
+
+    async def fetch_account_config(self) -> dict[str, Any]:
+        raise NotSupportedError(f"{self.name} has no account configuration")
 
     async def set_leverage(self, symbol: str, lever: float, mgn_mode: str = "cross") -> dict[str, Any]:
         """Set the leverage of one derivatives instrument. Returns the venue's row.
