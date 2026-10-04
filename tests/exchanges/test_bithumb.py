@@ -187,7 +187,7 @@ async def test_cancel_order(httpx_mock: HTTPXMock) -> None:
     assert req.url.path == "/v2/order" and req.url.params["order_id"] == "order-uuid-1"
     _assert_bearer_query_hash(req.headers, {"order_id": "order-uuid-1"})
     assert order.id == "order-uuid-1"
-    assert order.status == "cancel"
+    assert order.status == "unknown"
     # cancel_order only knows order_id/symbol — it cannot know the original side/type,
     # and the sparse v2 response doesn't carry them either, so both must stay unguessed.
     assert order.side == "" and order.type == ""
@@ -545,3 +545,67 @@ async def test_open_orders_and_cancel_echo_client_order_id(httpx_mock: HTTPXMock
     assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
     assert (await ex.cancel_order("order-uuid-1", "BTC/KRW")).client_order_id == CID
     await ex.close()
+
+
+# Official GET /v1/order example, accessed 2026-10-04 UTC; CONTRACTS.md sources.
+_OFFICIAL_FILL_1004 = {
+    "uuid": "C0101000000001799231",
+    "side": "bid",
+    "ord_type": "limit",
+    "price": "83000000",
+    "state": "done",
+    "market": "KRW-BTC",
+    "created_at": "2024-07-09T16:32:23+09:00",
+    "volume": "1",
+    "remaining_volume": "0",
+    "reserved_fee": "207500",
+    "remaining_fee": "0",
+    "paid_fee": "207500",
+    "locked": "0",
+    "executed_volume": "1",
+    "executed_funds": "83000000",
+    "trades_count": 1,
+    "stp_type": "cancel_taker",
+    "trades": [
+        {
+            "market": "KRW-BTC",
+            "uuid": "C0101000000001713006",
+            "price": "83000000",
+            "volume": "1",
+            "funds": "83000000",
+            "side": "bid",
+            "created_at": "2024-07-09T16:32:23+09:00",
+        }
+    ],
+}
+
+
+def test_official_fill_average_uses_execution_funds_not_limit_price_1004():
+    from pycex.exchanges.bithumb import _parse_bithumb_order
+
+    raw = dict(_OFFICIAL_FILL_1004)
+    order = _parse_bithumb_order("BTC/KRW", raw)
+    assert order.raw == raw
+    assert order.filled == float(raw["executed_volume"])
+    assert order.average_price == 83000000.0
+    raw["ord_type"] = "limit"
+    raw["price"] = "999999999"
+    assert _parse_bithumb_order(order.symbol, raw).average_price == order.average_price
+
+
+def test_unknown_status_and_response_market_identity_1004():
+    from pycex.exchanges.bithumb import _parse_bithumb_order
+
+    raw = {**_OFFICIAL_FILL_1004, "state": "new_undocumented_state", "market": "KRW-ETH"}
+    order = _parse_bithumb_order("BTC/KRW", raw)
+    assert order.status == "unknown"
+    assert order.symbol == "ETH/KRW"
+
+
+def test_missing_or_incomplete_execution_data_has_no_average_1004():
+    from pycex.exchanges.bithumb import _parse_bithumb_order
+
+    raw = {**_OFFICIAL_FILL_1004, "executed_volume": "0", "price": "999999999"}
+    assert _parse_bithumb_order("BTC/KRW", raw).average_price is None
+    raw.pop("executed_volume")
+    assert _parse_bithumb_order("BTC/KRW", raw).average_price is None

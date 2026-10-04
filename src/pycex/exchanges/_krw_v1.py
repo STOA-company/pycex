@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from pycex.constants import TIMEFRAME_MS
@@ -326,6 +327,38 @@ def _parse_balance(result: list[Any]) -> Balance:
     return Balance(assets=entries, raw=result)  # /v1/accounts returns a bare list
 
 
+def _execution_average(d: dict[str, Any]) -> float | None:
+    """Official cumulative funds, or complete trades[]; never the limit price.
+
+    Upbit GET /v1/order: trades[].funds/volume. Bithumb GET /v1/order:
+    executed_funds/executed_volume (2026-10-04 official response schemas).
+    """
+    try:
+        filled = Decimal(str(d.get("executed_volume")))
+        if not filled.is_finite() or filled <= 0:
+            return None
+        funds = d.get("executed_funds")
+        if funds is None:
+            trades = d.get("trades") or []
+            volumes = [Decimal(str(t["volume"])) for t in trades]
+            amounts = [Decimal(str(t["funds"])) for t in trades]
+            if (
+                not volumes
+                or any(not v.is_finite() or v <= 0 for v in volumes + amounts)
+                or sum(volumes, Decimal(0)) != filled
+            ):
+                return None
+            total = sum(amounts, Decimal(0))
+        else:
+            total = Decimal(str(funds))
+        if not total.is_finite() or total <= 0:
+            return None
+        average = float(total / filled)
+        return average if 0 < average < float("inf") else None
+    except (InvalidOperation, TypeError, ValueError, KeyError, OverflowError):
+        return None
+
+
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     """Parse a "full" order object — the shape returned by Upbit's ``/v1/order(s)``
     and Bithumb's ``/v1/order`` and ``/v2/orders/pending``/``/v2/orders/history``
@@ -349,7 +382,17 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
         amount = 0.0
     created_at = d.get("created_at")
     side = {"bid": "buy", "ask": "sell"}.get(d.get("side", ""), "")
-    order_type_out = "" if not ord_type else ("market" if ord_type in ("price", "market") else "limit")
+    order_type_out = {"limit": "limit", "price": "market", "market": "market"}.get(ord_type, "")
+    # Keep the response's market identity so callers can detect a wrong-order reply.
+    native = d.get("market")
+    if isinstance(native, str) and native.count("-") == 1:
+        quote, base = native.split("-")
+        symbol = spot(base, quote) if base and quote else ""
+    elif native is not None:
+        symbol = ""
+    state = d.get("state", "")
+    if state and state not in {"wait", "watch", "done", "cancel"}:
+        state = "unknown"
     return Order(
         id=str(d.get("uuid", "")),
         symbol=symbol,
@@ -358,7 +401,8 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
         amount=amount,
         price=price,
         filled=float(d.get("executed_volume", 0) or 0),
-        status=d.get("state", ""),
+        average_price=_execution_average(d),
+        status=state,
         timestamp=_parse_iso_to_ms(created_at) if created_at else 0,
         raw=d,
     )

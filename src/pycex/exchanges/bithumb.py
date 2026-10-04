@@ -260,8 +260,8 @@ class Bithumb(KrwV1Mixin, BaseExchange):
 
         The response is even sparser than create's (``order_id``,
         ``client_order_id``, ``created_at`` — no side/type/price at all).
-        ``status`` is forced to ``"cancel"`` — the one fact this call itself
-        guarantees — but ``side``/``type`` are deliberately left as ``""``:
+        This is cancellation acceptance, not final cancellation. ``status`` is
+        ``"unknown"`` until GET /v1/order confirms it. ``side``/``type`` stay ``""``:
         the caller only passes ``order_id``/``symbol`` here, not the original
         side/type, so there is nothing honest to fill them with. Do not guess.
         """
@@ -269,7 +269,7 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         async with self._rate_limiter.request("order"):
             data = self._check(await self._http.delete("/v2/order", params=params, headers=self._headers(params)))
         order = _parse_bithumb_order(symbol, data)
-        return order.model_copy(update={"status": "cancel"})
+        return order.model_copy(update={"status": "unknown"})
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
