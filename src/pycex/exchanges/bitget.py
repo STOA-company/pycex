@@ -243,8 +243,7 @@ class Bitget(BaseExchange):
         # This only rejects unsafe HTTP header values; it does not establish
         # broker approval or an undocumented channel-code format.
         if broker_id is not None and (
-            not isinstance(broker_id, str)
-            or any(not 0x21 <= ord(ch) <= 0x7E for ch in broker_id)
+            not isinstance(broker_id, str) or any(not 0x21 <= ord(ch) <= 0x7E for ch in broker_id)
         ):
             raise InvalidOrderError("bitget: invalid broker header value")
         self._api_key = api_key
