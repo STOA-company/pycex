@@ -55,6 +55,7 @@ match user's setting."), which surfaces to the caller unchanged.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -152,7 +153,19 @@ class Binance(BaseExchange):
         market_type: MarketType = "spot",
         testnet: bool | None = None,
         timeout: float = 30.0,
+        broker_id: str | None = None,
+        client_order_id_prefix: str | None = None,
     ) -> None:
+        # None preserves the legacy header. Global marking uses an approved
+        # final client ID prefix; no new broker-header format is assumed.
+        if broker_id is not None and (type(broker_id) is not str or broker_id != ""):
+            raise InvalidOrderError("binance: explicit broker_id only supports disabling the legacy header")
+        if client_order_id_prefix is not None and (
+            not isinstance(client_order_id_prefix, str)
+            or re.fullmatch(r"[.A-Z:/a-z0-9_-]{1,36}", client_order_id_prefix) is None
+        ):
+            raise InvalidOrderError("binance: invalid client order ID prefix")
+        self._client_order_id_prefix = client_order_id_prefix
         self._api_key = api_key
         self._secret = secret
         self.market_type = market_type
@@ -164,14 +177,24 @@ class Binance(BaseExchange):
         else:
             base = BINANCE_TESTNET if self.sandbox else BINANCE_BASE
         broker_headers: dict[str, str] = {}
-        if BINANCE_BROKER_ID:
-            broker_headers["X-MBX-BROKER-ID"] = BINANCE_BROKER_ID
+        legacy_broker_id = BINANCE_BROKER_ID if broker_id is None else broker_id
+        if legacy_broker_id:
+            broker_headers["X-MBX-BROKER-ID"] = legacy_broker_id
         # Endpoint weights follow Binance REST docs:
         # https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/rest-api.md
         # ExchangeRateLimiter is the sole request gate; keep the legacy HTTP gate inert.
         self._http = HTTPClient(
             base, timeout=timeout, rate=float("inf"), default_headers=broker_headers, error_mapper=_error_mapper
         )
+
+    def _validate_prefixed_client_id(self, value: str | None) -> None:
+        prefix = self._client_order_id_prefix
+        if prefix is not None and (
+            not isinstance(value, str)
+            or re.fullmatch(r"[.A-Z:/a-z0-9_-]{1,36}", value) is None
+            or not value.startswith(prefix)
+        ):
+            raise InvalidOrderError("binance: final client order ID does not match the configured prefix")
 
     def _p(self, name: str) -> str:
         return _PATHS[self.market_type][name]
@@ -294,7 +317,20 @@ class Binance(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        reduce_only: bool = False,
+        position_mode: str | None = None,
     ) -> Order:
+        # Request-shape validation only; the caller must independently bind
+        # the measured account mode. No account mode is changed here.
+        if type(reduce_only) is not bool:
+            raise InvalidOrderError("binance: reduce_only must be a boolean")
+        if position_mode is not None and (
+            type(position_mode) is not str or position_mode != "net" or self.market_type != "linear"
+        ):
+            raise InvalidOrderError("binance: only explicit linear net mode is supported")
+        if reduce_only and (self.market_type != "linear" or position_mode != "net"):
+            raise InvalidOrderError("binance: reduction requires explicit linear net mode")
+        self._validate_prefixed_client_id(client_order_id)
         native = self.to_native(symbol)
         params: dict[str, Any] = {
             "symbol": native,
@@ -302,6 +338,10 @@ class Binance(BaseExchange):
             "type": order_type.upper(),
             "quantity": str(amount),
         }
+        if position_mode is not None:
+            params["positionSide"] = "BOTH"
+        if reduce_only:
+            params["reduceOnly"] = "true"
         if client_order_id is not None:
             params["newClientOrderId"] = client_order_id
         if price is not None:
@@ -323,6 +363,8 @@ class Binance(BaseExchange):
         if bool(order_id) == bool(client_order_id):
             raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
         native = self.to_native(symbol)
+        if client_order_id is not None:
+            self._validate_prefixed_client_id(client_order_id)
         lookup = {"origClientOrderId": client_order_id} if client_order_id else {"orderId": order_id}
         async with self._rate_limiter.request("query", weight=1 if self.market_type == "linear" else 4):
             params = self._signed_params({"symbol": native, **lookup})
