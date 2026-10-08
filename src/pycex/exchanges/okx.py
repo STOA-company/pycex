@@ -592,7 +592,8 @@ class OKX(BaseExchange):
         return [_parse_order(self.from_native(o.get("instId", "")), o) for o in result]
 
     async def fetch_my_trades(
-        self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
+        self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None,
+        order_id: str | None = None, after: str | None = None, before: str | None = None,
     ) -> list[MyTrade]:
         """Fetch own fills via ``GET /api/v5/trade/fills`` (last 3 days).
 
@@ -600,12 +601,23 @@ class OKX(BaseExchange):
         timestamp, so there is no server-side way to pass ``since`` as a range
         filter here; it is instead applied client-side after parsing.
         """
+        # Official V5 fills cursors use billId, not timestamps. No auto paging/retry.
+        for value in (order_id, after, before):
+            if value is not None and (type(value) is not str or not value.isascii() or not value.isdecimal()):
+                raise InvalidOrderError("fills IDs must be decimal strings")
+        if (after is not None or before is not None or order_id is not None) and since is not None:
+            raise InvalidOrderError("explicit fills pagination cannot filter by since")
+        if after is not None and before is not None:
+            raise InvalidOrderError("choose one fills cursor")
         path = "/api/v5/trade/fills"
         params: dict[str, Any] = {"instType": self._inst_type}
         if symbol is not None:
             params["instId"] = self.to_native(symbol)
         if limit is not None:
             params["limit"] = str(limit)
+        for key, value in (("ordId", order_id), ("after", after), ("before", before)):
+            if value is not None:
+                params[key] = value
         full_path = f"{path}?{urlencode(params)}"
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, params=params, headers=self._auth_headers("GET", full_path))
