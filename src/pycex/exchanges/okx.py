@@ -592,8 +592,14 @@ class OKX(BaseExchange):
         return [_parse_order(self.from_native(o.get("instId", "")), o) for o in result]
 
     async def fetch_my_trades(
-        self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None,
-        order_id: str | None = None, after: str | None = None, before: str | None = None,
+        self,
+        symbol: str | None = None,
+        *,
+        since: int | None = None,
+        limit: int | None = None,
+        order_id: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
     ) -> list[MyTrade]:
         """Fetch own fills via ``GET /api/v5/trade/fills`` (last 3 days).
 
@@ -601,6 +607,48 @@ class OKX(BaseExchange):
         timestamp, so there is no server-side way to pass ``since`` as a range
         filter here; it is instead applied client-side after parsing.
         """
+        return await self._fetch_fills(
+            "/api/v5/trade/fills", symbol, since=since, limit=limit, order_id=order_id, after=after, before=before
+        )
+
+    async def fetch_my_trades_history(
+        self,
+        symbol: str | None = None,
+        *,
+        limit: int | None = None,
+        order_id: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[MyTrade]:
+        """Fetch own fills via ``GET /api/v5/trade/fills-history`` (last 3 months).
+
+        Same rows and ``billId`` cursors as :meth:`fetch_my_trades`; only the
+        retention differs (docs-v5 "Transaction details (last 3 months)":
+        ``instType`` required, ``limit`` max 100, 10 requests / 2 s per user).
+        Explicit opt-in method: ``fetch_my_trades`` keeps its 3-day endpoint.
+        No auto paging/retry.
+        """
+        return await self._fetch_fills(
+            "/api/v5/trade/fills-history",
+            symbol,
+            since=None,
+            limit=limit,
+            order_id=order_id,
+            after=after,
+            before=before,
+        )
+
+    async def _fetch_fills(
+        self,
+        path: str,
+        symbol: str | None,
+        *,
+        since: int | None,
+        limit: int | None,
+        order_id: str | None,
+        after: str | None,
+        before: str | None,
+    ) -> list[MyTrade]:
         # Official V5 fills cursors use billId, not timestamps. No auto paging/retry.
         for value in (order_id, after, before):
             if value is not None and (type(value) is not str or not value.isascii() or not value.isdecimal()):
@@ -609,7 +657,6 @@ class OKX(BaseExchange):
             raise InvalidOrderError("explicit fills pagination cannot filter by since")
         if after is not None and before is not None:
             raise InvalidOrderError("choose one fills cursor")
-        path = "/api/v5/trade/fills"
         params: dict[str, Any] = {"instType": self._inst_type}
         if symbol is not None:
             params["instId"] = self.to_native(symbol)

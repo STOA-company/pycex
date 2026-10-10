@@ -27,6 +27,7 @@ from pycex.exceptions import (
     AuthenticationError,
     ExchangeError,
     InsufficientBalanceError,
+    InvalidOrderError,
     NotSupportedError,
     OrderNotFoundError,
     RateLimitError,
@@ -514,6 +515,67 @@ async def test_fetch_my_trades_no_symbol_resolves_via_from_native(httpx_mock: HT
     req = httpx_mock.get_request()
     assert "instId" not in req.url.params
     assert trades[0].symbol == "ETH/USDT:USDT"
+    await ex.close()
+
+
+# ── my trades history (fills-history, last 3 months) ──
+# 대표 10-10 결정 — run /home/quantus/runs/global-mcp-okx-history-1010
+
+
+async def test_fetch_my_trades_history_uses_three_month_endpoint(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={
+            "code": "0",
+            "msg": "",
+            "data": [
+                {
+                    "instId": "BTC-USDT",
+                    "instType": "SPOT",
+                    "tradeId": "7",
+                    "ordId": "42",
+                    "billId": "900",
+                    "side": "buy",
+                    "fillPx": "100",
+                    "fillSz": "1",
+                    "fee": "-0.01",
+                    "feeCcy": "BTC",
+                    "fillTime": "1000",
+                    "ts": "1000",
+                }
+            ],
+        }
+    )
+    ex = OKX(api_key="k", secret="s", passphrase="p")
+    trades = await ex.fetch_my_trades_history("BTC/USDT", order_id="42", after="901", limit=100)
+    req = httpx_mock.get_request()
+    assert req.url.path == "/api/v5/trade/fills-history"
+    assert dict(req.url.params) == {
+        "instType": "SPOT",
+        "instId": "BTC-USDT",
+        "limit": "100",
+        "ordId": "42",
+        "after": "901",
+    }
+    _assert_valid_signature(req)
+    assert [(t.id, t.order_id, t.fee, t.fee_asset) for t in trades] == [("7", "42", -0.01, "BTC")]
+    assert trades[0].raw["billId"] == "900"
+    await ex.close()
+
+
+async def test_fetch_my_trades_history_rejects_bad_cursors_without_request(httpx_mock: HTTPXMock) -> None:
+    ex = OKX(api_key="k", secret="s", passphrase="p")
+    for kwargs in ({"after": "1", "before": "2"}, {"order_id": "4x"}, {"after": 5}):
+        with pytest.raises(InvalidOrderError):
+            await ex.fetch_my_trades_history("BTC/USDT", **kwargs)
+    assert httpx_mock.get_requests() == []
+    await ex.close()
+
+
+async def test_fetch_my_trades_default_stays_three_day_endpoint(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"code": "0", "msg": "", "data": []})
+    ex = OKX(api_key="k", secret="s", passphrase="p")
+    assert await ex.fetch_my_trades("BTC/USDT", order_id="42") == []
+    assert httpx_mock.get_request().url.path == "/api/v5/trade/fills"
     await ex.close()
 
 
