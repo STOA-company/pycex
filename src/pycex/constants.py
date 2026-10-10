@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Literal, NamedTuple
 
 # ── Binance ──
@@ -156,8 +157,27 @@ MARKET = "market"
 # Apply at each exchange's broker/partner program to get your own IDs.
 BINANCE_BROKER_ID = ""
 BYBIT_REFERRAL_CODE = ""
-OKX_BROKER_ID = ""
+OKX_BROKER_ID = ""  # built-in default; the environment below overrides it
 BITGET_BROKER_ID = ""  # X-CHANNEL-API-CODE for API broker rebate
+
+#: Environment variable carrying the OKX broker code. It exists so a
+#: deployment has **one** place to put the value: this SDK and the services
+#: embedding it read the same name, and no source file holds the value.
+OKX_BROKER_ID_ENV = "OKX_BROKER_ID"
+
+
+def okx_broker_id() -> str:
+    """The OKX broker code to attach to orders, read at call time.
+
+    Empty (unset, blank, or whitespace) means **attach nothing**: no ``tag``
+    field in the order body and no ``broker-id`` header, so a request is
+    byte-for-byte what it was before this hook existed. Reading the
+    environment per call rather than at import keeps the value independent
+    of import order — an embedder that loads its ``.env`` after importing
+    pycex still gets it.
+    """
+    return (os.getenv(OKX_BROKER_ID_ENV) or OKX_BROKER_ID).strip()
+
 
 # ── Symbol resolution ──
 # Quote-asset suffixes tried (longest-match-first is not required here since
