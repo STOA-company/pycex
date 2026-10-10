@@ -72,9 +72,9 @@ from pycex.base import BaseExchange
 from pycex.constants import (
     CANDLE_VENUES,
     OKX_BASE,
-    OKX_BROKER_ID,
     OKX_HISTORY_CANDLE_WEIGHT,
     OKX_RECENT_CANDLE_WEIGHT,
+    okx_broker_id,
 )
 from pycex.exceptions import (
     AuthenticationError,
@@ -165,8 +165,9 @@ class OKX(BaseExchange):
         self._markets: dict[str, Market] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         broker_headers: dict[str, str] = {}
-        if OKX_BROKER_ID:
-            broker_headers["broker-id"] = OKX_BROKER_ID
+        broker_id = okx_broker_id()
+        if broker_id:
+            broker_headers["broker-id"] = broker_id
         self._http = HTTPClient(
             # ExchangeRateLimiter is the sole admission gate; keep HTTPClient from delaying after signing.
             OKX_BASE,
@@ -498,8 +499,11 @@ class OKX(BaseExchange):
         algo = _attached_algo_orders(tp_px, sl_px)
         if algo is not None:
             body["attachAlgoOrds"] = [algo]
-        if OKX_BROKER_ID:
-            body["tag"] = OKX_BROKER_ID
+        # Broker code, when the deployment configured one. An empty config adds
+        # no key at all, so the signed body stays byte-identical to before.
+        broker_id = okx_broker_id()
+        if broker_id:
+            body["tag"] = broker_id
         if price is not None:
             body["px"] = str(price)
         # posSide is intentionally omitted: this assumes the SWAP account is in
