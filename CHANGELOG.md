@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - OKX: `fetch_my_trades_history` reads own fills from `GET /api/v5/trade/fills-history`
   (last 3 months, same `billId` cursors). `fetch_my_trades` keeps the 3-day endpoint.
+  It charges weight 2 on the shared query bucket (8 / 2 s, 80% of the 10 / 2 s cap).
 
 ## [0.4.5] - 2026-09-27
 

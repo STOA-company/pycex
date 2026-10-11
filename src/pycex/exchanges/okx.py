@@ -73,6 +73,7 @@ from pycex.constants import (
     CANDLE_VENUES,
     OKX_BASE,
     OKX_BROKER_ID,
+    OKX_FILLS_HISTORY_WEIGHT,
     OKX_HISTORY_CANDLE_WEIGHT,
     OKX_RECENT_CANDLE_WEIGHT,
 )
@@ -626,7 +627,8 @@ class OKX(BaseExchange):
         retention differs (docs-v5 "Transaction details (last 3 months)":
         ``instType`` required, ``limit`` max 100, 10 requests / 2 s per user).
         Explicit opt-in method: ``fetch_my_trades`` keeps its 3-day endpoint.
-        No auto paging/retry.
+        No auto paging/retry. Charges ``OKX_FILLS_HISTORY_WEIGHT`` on the shared
+        query bucket so consecutive pages stay under the 10 / 2 s cap.
         """
         return await self._fetch_fills(
             "/api/v5/trade/fills-history",
@@ -636,6 +638,7 @@ class OKX(BaseExchange):
             order_id=order_id,
             after=after,
             before=before,
+            weight=OKX_FILLS_HISTORY_WEIGHT,
         )
 
     async def _fetch_fills(
@@ -648,6 +651,7 @@ class OKX(BaseExchange):
         order_id: str | None,
         after: str | None,
         before: str | None,
+        weight: float = 1,
     ) -> list[MyTrade]:
         # Official V5 fills cursors use billId, not timestamps. No auto paging/retry.
         for value in (order_id, after, before):
@@ -666,7 +670,7 @@ class OKX(BaseExchange):
             if value is not None:
                 params[key] = value
         full_path = f"{path}?{urlencode(params)}"
-        async with self._rate_limiter.request("query"):
+        async with self._rate_limiter.request("query", weight=weight):
             data = await self._http.get(path, params=params, headers=self._auth_headers("GET", full_path))
         result = self._check(data)
         trades = [
