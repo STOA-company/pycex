@@ -63,6 +63,10 @@ OKX_ORDER_PUBLISHED_CAP: tuple[int, float] | None = None
 OKX_ORDER_RATE_LIMIT = (5, 1.0)
 OKX_RECENT_CANDLE_WEIGHT = 0.5
 OKX_HISTORY_CANDLE_WEIGHT = 1.0
+# Review 10-12: /trade/fills-history allows 10 requests / 2 s per user (docs-v5
+# "Transaction details (last 3 months)"). Weight 2 on the 16/2s query bucket
+# admits 8 / 2 s, 80% of that cap, so long page runs wait instead of 50011.
+OKX_FILLS_HISTORY_WEIGHT = 2.0
 
 # 공시값 미확인(벤더 문서 재확인 실패 — 2026-09-22)
 # Public bucket stays 16/s. The order bucket stays 5/s.
