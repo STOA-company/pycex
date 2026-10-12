@@ -25,9 +25,11 @@ def test_readme_candles_section_is_korean_and_english() -> None:
     text = (ROOT / "README.md").read_text()
     assert "closed_only=True" in text
     assert "fetch_candles_history" in text
-    assert "닫힌 봉" in text
     assert "Closed bars" in text
     assert "listed_at" in text
+    ko = (ROOT / "README.ko.md").read_text()
+    assert "closed_only=True" in ko
+    assert "닫힌 봉" in ko
 
 
 def test_api_docs_describe_listed_at_and_history() -> None:
