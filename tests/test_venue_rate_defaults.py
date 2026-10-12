@@ -293,3 +293,40 @@ async def test_okx_history_candle_charges_a_full_token_after_an_empty_recent_pag
         assert ex._rate_limiter._buckets["query"].tokens == before - 1.5
     finally:
         await ex.close()
+
+
+async def test_okx_fills_history_pages_stay_inside_ten_per_two_seconds() -> None:
+    """Review 10-12: fills-history is 10 requests / 2 s per user. The trader reads up to
+    20 pages in a row; pages beyond the cap must wait, not hit 50011. Weight 2 on the
+    16/2s query bucket admits 8 / 2 s (80% of the cap, the table's rule)."""
+    clock = FakeClock()
+    ex = OKX(api_key="k", secret="s", passphrase="p")
+    ex._rate_limiter = ExchangeRateLimiter("okx", clock=clock, sleep=clock.sleep)
+    ex._http.set_transport_factory(
+        lambda: httpx.MockTransport(lambda request: httpx.Response(200, json={"code": "0", "data": []}))
+    )
+    stamps: list[float] = []
+    try:
+        for _ in range(25):
+            await ex.fetch_my_trades_history("BTC/USDT", order_id="42", limit=100)
+            stamps.append(clock.now)
+    finally:
+        await ex.close()
+    for stamp in stamps:
+        assert len([item for item in stamps if stamp - 2.0 < item <= stamp]) <= 8
+    assert constants.OKX_FILLS_HISTORY_WEIGHT == 2.0
+
+
+async def test_okx_three_day_fills_keep_a_full_token() -> None:
+    clock = FakeClock()
+    ex = OKX(api_key="k", secret="s", passphrase="p")
+    ex._rate_limiter = ExchangeRateLimiter("okx", clock=clock, sleep=clock.sleep)
+    ex._http.set_transport_factory(
+        lambda: httpx.MockTransport(lambda request: httpx.Response(200, json={"code": "0", "data": []}))
+    )
+    try:
+        before = ex._rate_limiter._buckets["query"].tokens
+        await ex.fetch_my_trades("BTC/USDT", order_id="42", limit=100)
+        assert ex._rate_limiter._buckets["query"].tokens == before - 1
+    finally:
+        await ex.close()

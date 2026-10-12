@@ -28,7 +28,7 @@ OKX·Bitget 행은 공시값 미확인(벤더 문서 재확인 실패 — 2026-0
 | korbit | spot | query | 40 | 1 | 4 |
 | korbit | spot | order | 24 | 1 | 4 |
 
-OKX 최근 캔들 가중치 0.5, 히스토리 캔들 가중치 1. query 버킷 16/2s 위에서 각각 32/2s, 16/2s. 이 가중치의 공시 근거도 위 OKX 행과 같이 미확인이다.
+OKX 3개월 체결 내역(`fetch_my_trades_history`, fills-history) 가중치 2: 공시 10회/2초의 80%인 8회/2초(10-12 재검수). OKX 최근 캔들 가중치 0.5, 히스토리 캔들 가중치 1. query 버킷 16/2s 위에서 각각 32/2s, 16/2s. 이 가중치의 공시 근거도 위 OKX 행과 같이 미확인이다.
 
 Upbit 시세 그룹(`market`, `candle`, `ticker`, `trade`, `orderbook`)은 그룹당 8/s 다. Exchange `default`(어댑터 그룹 `query30`)와 그룹 없는 query 는 24/s 다. 그룹이 있기만 하면 8/s 버킷을 붙이던 옛 매핑은 `default` 30/s 엔드포인트까지 8/s 로 묶었다. 시세 그룹을 24/s 로 올리면 공시 10/s 를 넘는다.
 
