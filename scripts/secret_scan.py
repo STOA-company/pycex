@@ -21,6 +21,7 @@ TARGETS = [
     ROOT / "tests" / "fixtures",
     ROOT / "CHANGELOG.md",
     ROOT / "README.md",
+    ROOT / "README.ko.md",
     ROOT / "docs",
 ]
 
