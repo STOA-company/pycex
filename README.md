@@ -1,42 +1,44 @@
 # pycex
 
+English | [한국어](README.ko.md)
+
 Unified Python wrapper for cryptocurrency exchanges — **Binance**, **Bybit**,
 **OKX**, **Bitget**, **Upbit**, **Bithumb**, **Korbit**.
 
-ccxt의 복잡한 코드베이스 대신, Pydantic 타입 안전성과 async-first 설계, 내장 rate limiter, MCP 서버를 제공하는 깔끔한 Python 라이브러리입니다.
+A clean alternative to ccxt's sprawling codebase: Pydantic type safety, an async-first design, a built-in rate limiter, and an MCP server.
 
 ## Features
 
-- **Unified API** — 동일한 인터페이스로 7개 거래소 사용 (spot + USDT-margined perpetual)
-- **Sync + Async** — 동기/비동기 모두 지원 (매 메서드마다 자동 생성된 `_sync` 트윈)
-- **Canonical Symbols** — 모든 거래소에서 동일한 `BASE/QUOTE`(spot) / `BASE/QUOTE:SETTLE`(linear) 표기
+- **Unified API** — one interface for 7 exchanges (spot + USDT-margined perpetuals)
+- **Sync + Async** — both styles supported (every method has an auto-generated `_sync` twin)
+- **Canonical Symbols** — the same `BASE/QUOTE` (spot) / `BASE/QUOTE:SETTLE` (linear) notation on every exchange
 - **Pydantic Models** — `Ticker`, `OrderBook`, `Balance`, `Order`, `Candle`, `Trade`, `Market`, `MyTrade`, `Position`, `FundingRate`
-- **Rate Limiting** — Token bucket rate limiter 내장 (거래소별 기본값)
-- **MCP Server** — Claude Desktop 등 AI 어시스턴트 연동
-- **CLI** — 터미널에서 시세, 잔고, 주문
-- **Type Safe** — PEP 561 `py.typed`, 완전한 타입 힌트, `mypy --strict` 통과
+- **Rate Limiting** — built-in token-bucket rate limiter (per-exchange defaults)
+- **MCP Server** — connect Claude Desktop and other AI assistants
+- **CLI** — quotes, balances, and orders from the terminal
+- **Type Safe** — PEP 561 `py.typed`, full type hints, passes `mypy --strict`
 
 ## Installation
 
 ```bash
 pip install pycex
 
-# MCP 서버 사용 시
+# with the MCP server
 pip install pycex[mcp]
 ```
 
 ## Quick Start
 
-심볼은 거래소와 무관하게 항상 정규(canonical) 표기를 씁니다 — spot은
-`BASE/QUOTE`(예: `BTC/USDT`), USDT 무기한 선물은 `BASE/QUOTE:SETTLE`(예:
-`BTC/USDT:USDT`). 각 어댑터가 내부적으로 거래소별 네이티브 표기(`BTCUSDT`,
-`BTC-USDT`, `KRW-BTC` 등)로 변환하므로, 네이티브 표기를 직접 넘기면
-`SymbolNotFoundError`가 발생합니다.
+Symbols always use canonical notation regardless of exchange — spot is
+`BASE/QUOTE` (e.g. `BTC/USDT`), USDT perpetuals are `BASE/QUOTE:SETTLE` (e.g.
+`BTC/USDT:USDT`). Each adapter converts to the exchange's native notation
+(`BTCUSDT`, `BTC-USDT`, `KRW-BTC`, ...) internally, so passing a native symbol
+directly raises `SymbolNotFoundError`.
 
 ```python
 from pycex import Binance
 
-# 시세 조회 (인증 불필요)
+# Ticker (no authentication needed)
 with Binance() as ex:
     ticker = ex.fetch_ticker_sync("BTC/USDT")
     print(f"BTC: ${ticker.last:,.2f}")
@@ -57,7 +59,7 @@ with create_exchange("upbit") as ex:
 
 ## Multi-Exchange
 
-동일한 인터페이스로 거래소를 교체할 수 있습니다:
+Swap exchanges behind the same interface:
 
 ```python
 from pycex import Binance, Bitget, Bybit, OKX
@@ -108,17 +110,17 @@ with Binance() as ex:
 from pycex import Binance
 
 with Binance(api_key="YOUR_KEY", secret="YOUR_SECRET", sandbox=True) as ex:
-    # 잔고 조회
+    # Balance
     balance = ex.fetch_balance_sync()
     btc = balance.get("BTC")
     if btc:
         print(f"BTC: free={btc.free}, locked={btc.locked}, total={btc.total}")
 
-    # Limit 매수
+    # Limit buy
     order = ex.create_order_sync("BTC/USDT", "buy", "limit", amount=0.001, price=50000.0)
     print(f"Order placed: {order.id}")
 
-    # 주문 취소
+    # Cancel
     canceled = ex.cancel_order_sync(order.id, "BTC/USDT")
     print(f"Canceled: {canceled.id}")
 ```
@@ -154,40 +156,42 @@ hedge-mode caveats, etc.).
 from pycex import Bybit
 
 with Bybit() as ex:
-    # 일봉
+    # Daily bars
     candles = ex.fetch_candles_sync("BTC/USDT", "1d", limit=30)
 
-    # since/until 를 주면 페이지네이션이 자동으로 이어집니다 (중복 제거, 시간순 정렬)
+    # Pass since/until and pagination continues automatically (deduplicated, time-ordered)
     paged = ex.fetch_candles_sync("BTC/USDT", "1d", since=1_735_689_600_000, until=1_738_368_000_000)
 ```
 
-지원 timeframe: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`
+Supported timeframes: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`
 
-🚨 **일봉(1d) 경계가 거래소마다 다릅니다** — `Candle.timestamp`는 항상 봉 시작
-시각(UTC epoch ms)이지만, "오늘"이 어디서 끊기는지는 거래소별로 다릅니다:
+🚨 **The daily (1d) bar boundary differs by exchange** — `Candle.timestamp` is
+always the bar open (UTC epoch ms), but where "today" starts depends on the
+exchange:
 
 | Exchange | Daily-bar boundary |
 |----------|---------------------|
 | Upbit | 00:00 UTC (= 09:00 KST) |
-| Bithumb | 00:00 KST (= 15:00 UTC, 전날) |
-| Korbit | 00:00 KST (= 15:00 UTC, 전날) |
+| Bithumb | 00:00 KST (= 15:00 UTC, previous day) |
+| Korbit | 00:00 KST (= 15:00 UTC, previous day) |
 | Binance | 00:00 UTC |
 | OKX | 00:00 UTC |
 | Bitget | 00:00 UTC |
 
-같은 필드 이름(`candle_date_time_utc`)을 반환해도 Upbit과 Bithumb의 일봉 경계는
-다르므로, KST 캘린더 날짜 하나에 대응하는 원장 봉이 두 거래소에서 서로 다를 수
-있습니다. 자세한 근거는 `tests/fixtures/NOTES.md`를 참고하세요.
+Upbit and Bithumb return the same field name (`candle_date_time_utc`) but use
+different daily boundaries, so the bar covering one KST calendar date can differ
+between the two. See `tests/fixtures/NOTES.md` for the evidence.
 
-### 캔들 페이지네이션 — 거래소별 실측
+### Candle pagination — measured per exchange
 
-`since`/`until` 을 주면 `fetch_candles` 가 거래소 상한을 넘는 구간을 자동으로
-페이징합니다. 페이징 방향은 거래소마다 다르고, **문서가 아니라 실측으로**
-정했습니다 (2026-08-30 공개 엔드포인트 프로브):
+With `since`/`until`, `fetch_candles` pages automatically through ranges larger
+than the exchange's per-request cap. Paging direction differs by exchange and
+was set **by measurement, not documentation** (public endpoint probe,
+2026-08-30):
 
-| Exchange | 1페이지 상한 | 페이징 방향 | 봉 시각 | timeframe | 커서 파라미터 |
+| Exchange | Page cap | Direction | Bar time | Timeframes | Cursor parameter |
 |----------|:---:|:---:|:---:|---|---|
-| Binance (spot·linear) | 200 | forward | open | 1m 5m 15m 1h 4h 1d | `startTime` — 가장 **오래된** 구간부터 |
+| Binance (spot·linear) | 200 | forward | open | 1m 5m 15m 1h 4h 1d | `startTime` — from the **oldest** range |
 | Bybit (spot·linear) | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `end` |
 | OKX (spot·linear) | 100 | backward | open | 1m 5m 15m 1h 4h 1d | `after` |
 | Bitget (spot·linear) | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `endTime` |
@@ -195,39 +199,22 @@ with Bybit() as ex:
 | Bithumb | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `to` |
 | Korbit | 200 | backward | open | 1m 5m 15m 1h 4h 1d | `end` |
 
-- **backward** = 그 거래소의 캔들 엔드포인트는 `since` 를 시작점으로 쓰지 않고
-  `until`(없으면 "지금") 기준으로 **가장 최근** 봉부터 되돌려줍니다. 그래서
-  `fetch_candles` 는 커서를 위가 아니라 아래로 내리며 걷습니다
+- **backward** means the exchange's candle endpoint does not use `since` as a
+  start; it returns the **most recent** bars before `until` (or "now"). So
+  `fetch_candles` walks its cursor downward rather than upward
   (`BaseExchange.candle_paging`).
-- Bybit·Bitget mix 는 `start` 만 보내면 오래된 쪽을, `start`+`end` 를 같이
-  보내면 최신 쪽을 돌려줍니다. 구간 조회는 후자이므로 backward 로 걷습니다.
-  Bitget mix 는 두 경계를 90일 넘게 같이 보내면 아예 오류입니다.
-- 어느 방향이든 결과 계약은 같습니다: **중복 제거 · 시간 오름차순 ·
-  `[since, until]` 안 · `limit` 개까지**.
-- 실측 결과(2026-08-30, 11개 surface 전부): 1h × 15일 = 360/360봉,
-  1d × 300일 = 300/300봉. 재현은 `pytest -m live tests/live -k pagination`.
-- 위 표의 숫자는 `pycex.constants.CANDLE_VENUES` 와 같다. 표에 없는
-  timeframe(`3m`, `1w` 등)은 `NotSupportedError`.
-- 봉 시각은 일곱 곳 모두 **시작(open)**. 거래소가 종료 시각을 주는 경우(Binance
-  kline index 6)도 어댑터가 시작으로 맞춘 뒤 `Candle.timestamp`에 넣는다.
-
-### 닫힌 봉과 소급
-
-`closed_only=True` 이면 아직 끝나지 않은 봉을 빼니다. 판정은
-`timestamp + timeframe_ms <= now_ms` (봉 종료 ≤ 지금)입니다.
-
-```python
-from pycex import Binance
-
-with Binance() as ex:
-    closed = ex.fetch_candles_sync("BTC/USDT", "1m", limit=5, closed_only=True)
-
-    # since 부터 마지막 닫힌 봉까지. 페이지 상한·빈 응답·429 백오프(최대 5회)는 도우미가 처리합니다.
-    history = ex.fetch_candles_history_sync("BTC/USDT", "1m", since=1_700_000_000_000)
-```
-
-`fetch_markets()` 의 `Market.listed_at` 은 거래소가 주는 상장 시각(UTC)이고,
-없으면 `None` 입니다 (업비트·빗썸·코빗·바이낸스 현물·비트겟 현물은 보통 `None`).
+- Bybit and Bitget mix return the oldest side when sent only `start`, and the
+  newest side when sent `start`+`end`. Range queries use the latter, so they
+  walk backward. Bitget mix errors outright if both bounds span more than 90 days.
+- Either way the result contract is the same: **deduplicated · ascending time ·
+  inside `[since, until]` · up to `limit` bars**.
+- Measured (2026-08-30, all 11 surfaces): 1h × 15 days = 360/360 bars,
+  1d × 300 days = 300/300 bars. Reproduce with `pytest -m live tests/live -k pagination`.
+- The numbers in the table match `pycex.constants.CANDLE_VENUES`. Timeframes not
+  listed (`3m`, `1w`, ...) raise `NotSupportedError`.
+- Bar time is the **open** on all seven. When an exchange gives the close time
+  (Binance kline index 6), the adapter converts it to the open before setting
+  `Candle.timestamp`.
 
 ### Closed bars
 
@@ -247,22 +234,23 @@ with Binance() as ex:
 ends the walk. `RateLimitError` sleeps for `Retry-After` when the exchange
 sends one, otherwise 1, 2, 4, 8, 16 seconds, at most five times.
 `Market.listed_at` is the venue listing time, or `None` when the venue does
-not publish one. Page limits and timeframes live in `CANDLE_VENUES`.
+not publish one (usually `None` on Upbit, Bithumb, Korbit, Binance spot and
+Bitget spot). Page limits and timeframes live in `CANDLE_VENUES`.
 
-🚨 **Upbit·Bithumb 의 `to` 는 타임존 해석이 다릅니다.** Upbit 은 `Z` 접미사를
-받고 naive 값을 **UTC** 로 읽습니다. Bithumb 은 타임존 접미사가 붙으면 (`Z`,
-`+00:00` 모두) HTTP 200 + `{"error":{"name":400,...}}` 로 거부하고, naive 값을
-**KST** 로 읽습니다. 어댑터가 `_format_to` 훅으로 각각 맞춰 보내므로 호출부는
-언제나 UTC epoch ms(`until=`) 만 주면 됩니다.
+🚨 **Upbit and Bithumb read `to` in different time zones.** Upbit accepts a `Z`
+suffix and reads naive values as **UTC**. Bithumb rejects any time zone suffix
+(`Z` or `+00:00`) with HTTP 200 + `{"error":{"name":400,...}}` and reads naive
+values as **KST**. The adapters format each one through the `_format_to` hook,
+so callers only ever pass UTC epoch ms (`until=`).
 
-🚨 **Bithumb 은 오류도 HTTP 200 으로 보냅니다** (`{"error":{"name":404,...}}`).
-`KrwV1Mixin._check` 가 상태 코드와 무관하게 이 봉투를 잡아 `PyCexError` 로
-올립니다 — 두 거래소 모두 알 수 없는 마켓 코드에 `error.name` 을 **정수** 404
-로 돌려주므로 `SymbolNotFoundError` 가 됩니다.
+🚨 **Bithumb also sends errors with HTTP 200** (`{"error":{"name":404,...}}`).
+`KrwV1Mixin._check` catches this envelope regardless of status code and raises
+`PyCexError` — both exchanges return `error.name` as the **integer** 404 for an
+unknown market code, which becomes `SymbolNotFoundError`.
 
 ## Rate limits
 
-어댑터 기본값, 공시 출처, 확인하지 못한 행은 [docs/rate-limits.md](docs/rate-limits.md)에 있습니다. 채택 값은 확인된 공시 한도의 80%를 정수로 내린 값 이하입니다. `fetch_candles_history`의 429 백오프(1, 2, 4, 8, 16초, 최대 5회)는 바꾸지 않았습니다.
+Adapter defaults, published sources, and rows we could not confirm are in [docs/rate-limits.md](docs/rate-limits.md). Adopted values are at or below 80% of the confirmed published limit, rounded down. The 429 backoff in `fetch_candles_history` (1, 2, 4, 8, 16 seconds, at most five times) is unchanged.
 
 ## Supported Exchanges
 
@@ -278,8 +266,8 @@ not publish one. Page limits and timeframes live in `CANDLE_VENUES`.
 
 Bybit `linear`: markets/candles/orders/balance/my_trades all work under `category=linear`; positions/funding are not yet wired (out of phase-1 scope for this adapter) and raise `NotSupportedError` like a spot instance.
 
-`candles+pagination` ○ 는 "`since`/`until` 로 한 페이지를 넘는 구간을 요청하면
-빠짐없이 돌려준다"는 뜻이고, 위 실측 표가 그 근거입니다.
+`candles+pagination` ○ means "a `since`/`until` request spanning more than one
+page comes back complete"; the measured table above is the evidence.
 
 `linear` = USDT-margined perpetual futures (`market_type="linear"`). Upbit,
 Bithumb, and Korbit are KRW spot exchanges only — `sandbox=True` or
@@ -287,9 +275,9 @@ Bithumb, and Korbit are KRW spot exchanges only — `sandbox=True` or
 `fetch_positions`/`fetch_funding_rate` raise `NotSupportedError` on every spot
 instance (shared `BaseExchange` default).
 
-심볼은 모든 거래소에서 동일하게 표준 표기(`BASE/QUOTE`, 예: `BTC/USDT`)를 씁니다 —
-아래 "Native Format"은 각 어댑터가 내부적으로 거래소 API에 보내는 표기일 뿐,
-호출부에서 직접 쓰지 않습니다.
+Symbols use the same canonical notation (`BASE/QUOTE`, e.g. `BTC/USDT`) on
+every exchange. The "Native Format" below is only what each adapter sends to the
+exchange API internally; callers never use it directly.
 
 | Exchange | Native Format (spot) | Native Format (linear) |
 |----------|-----------------------|--------------------------|
@@ -303,7 +291,7 @@ instance (shared `BaseExchange` default).
 
 ## Raw API Response
 
-모든 모델은 `.raw` 필드로 원본 거래소 응답에 접근할 수 있습니다:
+Every model exposes the original exchange response through `.raw`:
 
 ```python
 from pycex import Binance
@@ -320,13 +308,13 @@ export PYCEX_EXCHANGE=binance
 export PYCEX_API_KEY="your_key"
 export PYCEX_SECRET="your_secret"
 
-pycex ticker BTC/USDT              # 시세 조회
-pycex orderbook BTC/USDT           # 호가창
-pycex balance                      # 잔고
-pycex buy BTC/USDT 0.001 50000     # 매수
-pycex sell BTC/USDT 0.001 55000    # 매도
+pycex ticker BTC/USDT              # ticker
+pycex orderbook BTC/USDT           # order book
+pycex balance                      # balance
+pycex buy BTC/USDT 0.001 50000     # buy
+pycex sell BTC/USDT 0.001 55000    # sell
 
-# 거래소 지정 (binance, bybit, okx, bitget, upbit, bithumb, korbit)
+# Choose the exchange (binance, bybit, okx, bitget, upbit, bithumb, korbit)
 pycex -e bybit ticker BTC/USDT
 pycex -e okx ticker BTC/USDT
 pycex -e upbit ticker BTC/KRW
@@ -362,19 +350,20 @@ tools) and prompt reference.
 
 ## Environment Variables
 
-모든 인증 값은 환경변수 이름으로만 지칭됩니다 — 값을 코드나 로그에 쓰지 마세요.
-일반(generic) 변수와 거래소별(per-exchange) 변수가 함께 지원되며, 거래소별
-변수가 있으면 그쪽이 우선합니다 (CLI/MCP 공용 `pycex.factory.create_exchange`):
+Credentials are referenced only by environment variable name — never put the
+values in code or logs. Generic and per-exchange variables are both supported,
+and the per-exchange variable wins when both are set (shared by the CLI and MCP
+through `pycex.factory.create_exchange`):
 
 | Variable | Description |
 |----------|-------------|
-| `PYCEX_EXCHANGE` | 거래소 이름 (`binance`, `bybit`, `okx`, `bitget`, `upbit`, `bithumb`, `korbit`) |
-| `PYCEX_API_KEY` / `PYCEX_{EXCHANGE}_API_KEY` | API 키 (예: `PYCEX_BYBIT_API_KEY`) |
-| `PYCEX_SECRET` / `PYCEX_{EXCHANGE}_SECRET` | API 시크릿 |
+| `PYCEX_EXCHANGE` | Exchange name (`binance`, `bybit`, `okx`, `bitget`, `upbit`, `bithumb`, `korbit`) |
+| `PYCEX_API_KEY` / `PYCEX_{EXCHANGE}_API_KEY` | API key (e.g. `PYCEX_BYBIT_API_KEY`) |
+| `PYCEX_SECRET` / `PYCEX_{EXCHANGE}_SECRET` | API secret |
 | `PYCEX_PASSPHRASE` / `PYCEX_{EXCHANGE}_PASSPHRASE` | OKX/Bitget passphrase |
-| `PYCEX_SANDBOX` | `1`/`true` — 샌드박스/데모/테스트넷 사용 |
-| `PYCEX_MARKET_TYPE` | `spot`(기본) 또는 `linear` |
-| `PYCEX_TESTNET` | **Deprecated** — `PYCEX_SANDBOX`의 예전 이름 (여전히 동작) |
+| `PYCEX_SANDBOX` | `1`/`true` — use sandbox/demo/testnet |
+| `PYCEX_MARKET_TYPE` | `spot` (default) or `linear` |
+| `PYCEX_TESTNET` | **Deprecated** — old name for `PYCEX_SANDBOX` (still works) |
 
 ## License
 
