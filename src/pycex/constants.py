@@ -95,6 +95,11 @@ BYBIT_TESTNET = "https://api-testnet.bybit.com"
 # ── OKX ──
 OKX_BASE = "https://www.okx.com"
 OKX_DEMO = "https://www.okx.com"  # same host, demo flag in header
+#: Host used by OKX's OAuth broker documentation for Bearer-token REST calls
+#: (https://www.okx.com/docs-v5/broker_en/ , OAuth section curl example). Only
+#: used when an adapter is built with ``oauth_token``; API-key adapters keep
+#: :data:`OKX_BASE`.
+OKX_OAUTH_BASE = "https://openapi.okx.com"
 
 # ── Bitget ──
 BITGET_BASE = "https://api.bitget.com"  # same host for live and demo, demo via paptrading header

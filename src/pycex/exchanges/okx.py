@@ -63,7 +63,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -74,6 +74,7 @@ from pycex.constants import (
     OKX_BASE,
     OKX_BROKER_ID,
     OKX_HISTORY_CANDLE_WEIGHT,
+    OKX_OAUTH_BASE,
     OKX_RECENT_CANDLE_WEIGHT,
 )
 from pycex.exceptions import (
@@ -150,7 +151,28 @@ class OKX(BaseExchange):
         td_mode: Literal["cross", "isolated"] = "cross",
         demo: bool | None = None,
         timeout: float = 30.0,
+        oauth_token: Callable[[], str] | None = None,
+        oauth_base_url: str = OKX_OAUTH_BASE,
     ) -> None:
+        # OAuth (Bearer) is an *alternative* to API-key signing, never a mix: an
+        # adapter that carried both would leave it ambiguous which identity an
+        # order is placed under. The token is a zero-argument callable so a
+        # caller whose tokens rotate (OKX refresh issues a new pair and the old
+        # access token stops working at once) is asked for the current one on
+        # every request instead of the adapter caching a stale string.
+        if oauth_token is not None:
+            if not callable(oauth_token):
+                raise TypeError("okx: oauth_token must be a zero-argument callable returning the access token")
+            if api_key or secret or passphrase:
+                raise ValueError("okx: pass either API-key credentials or oauth_token, not both")
+            if not isinstance(oauth_base_url, str) or not oauth_base_url.startswith("https://"):
+                raise ValueError("okx: oauth_base_url must be an https:// URL")
+            if sandbox or demo:
+                # OKX's broker docs do not say whether OAuth tokens work with the
+                # demo-trading header; refuse instead of guessing which account
+                # an order would land in.
+                raise ValueError("okx: OAuth with demo trading is not documented by OKX; refusing")
+        self._oauth_token = oauth_token
         self._api_key = api_key
         self._secret = secret
         self._passphrase = passphrase
@@ -169,7 +191,7 @@ class OKX(BaseExchange):
             broker_headers["broker-id"] = OKX_BROKER_ID
         self._http = HTTPClient(
             # ExchangeRateLimiter is the sole admission gate; keep HTTPClient from delaying after signing.
-            OKX_BASE,
+            OKX_BASE if oauth_token is None else oauth_base_url.rstrip("/"),
             timeout=timeout,
             rate=float("inf"),
             default_headers=broker_headers,
@@ -216,7 +238,20 @@ class OKX(BaseExchange):
         result: list[Any] = data.get("data", [])
         return result
 
+    @property
+    def auth_mode(self) -> Literal["api_key", "oauth"]:
+        """Which identity private calls are made under. Read-only."""
+        return "api_key" if self._oauth_token is None else "oauth"
+
     def _auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
+        if self._oauth_token is not None:
+            token = self._oauth_token()
+            # Never send ``Bearer `` with an empty token: OKX would answer with an
+            # auth error that looks like a revoked grant (53000/53003) and the
+            # caller could wrongly treat the connection as permanently broken.
+            if not isinstance(token, str) or not token.strip():
+                raise AuthenticationError("okx: OAuth access token is unavailable")
+            return {"Authorization": f"Bearer {token.strip()}"}
         headers = okx_headers(self._api_key, self._secret, self._passphrase, method, path, body)
         if self.sandbox:
             headers["x-simulated-trading"] = "1"
