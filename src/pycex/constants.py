@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from typing import Literal, NamedTuple
 
 # ── Binance ──
@@ -165,18 +167,29 @@ BITGET_BROKER_ID = ""  # X-CHANNEL-API-CODE for API broker rebate
 #: embedding it read the same name, and no source file holds the value.
 OKX_BROKER_ID_ENV = "OKX_BROKER_ID"
 
+_OKX_TAG_PATTERN = re.compile(r"[A-Za-z0-9]{1,16}", re.ASCII)
+_log = logging.getLogger(__name__)
+
 
 def okx_broker_id() -> str:
     """The OKX broker code to attach to orders, read at call time.
 
-    Empty (unset, blank, or whitespace) means **attach nothing**: no ``tag``
+    Empty (unset, blank, or whitespace) or malformed (not 1-16 ASCII
+    letters/digits) means **attach nothing**: no ``tag``
     field in the order body and no ``broker-id`` header, so a request is
     byte-for-byte what it was before this hook existed. Reading the
     environment per call rather than at import keeps the value independent
     of import order — an embedder that loads its ``.env`` after importing
     pycex still gets it.
     """
-    return (os.getenv(OKX_BROKER_ID_ENV) or OKX_BROKER_ID).strip()
+    value = (os.getenv(OKX_BROKER_ID_ENV) or OKX_BROKER_ID).strip()
+    if value and not _OKX_TAG_PATTERN.fullmatch(value):
+        # OKX accepts a tag of 1-16 ASCII letters/digits only. A malformed code
+        # is dropped (the order goes out untagged) instead of being sent and
+        # rejected. Log the length only, never the value.
+        _log.warning("OKX broker code ignored: not 1-16 ASCII letters/digits (length=%d)", len(value))
+        return ""
+    return value
 
 
 # ── Symbol resolution ──
