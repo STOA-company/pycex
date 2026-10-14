@@ -132,3 +132,36 @@ def test_broker_id_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
 def test_environment_name_is_stable() -> None:
     """Embedders (quantus-trader) read this same name — keep it put."""
     assert OKX_BROKER_ID_ENV == "OKX_BROKER_ID"
+
+
+# ── 4. Malformed code: drop the tag, never block the order ──
+
+
+@pytest.mark.parametrize("bad", ["ABCDEFGHIJKLMNOPQ", "TAG-1", "TAG 1", "태그12", "TAG_1", "a" * 40])
+def test_malformed_code_is_ignored(monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    monkeypatch.setenv(OKX_BROKER_ID_ENV, bad)
+    assert okx_broker_id() == ""
+
+
+@pytest.mark.parametrize("good", ["A", "abcDEF0123456789", "a1"])
+def test_well_formed_codes_pass(monkeypatch: pytest.MonkeyPatch, good: str) -> None:
+    monkeypatch.setenv(OKX_BROKER_ID_ENV, good)
+    assert okx_broker_id() == good
+
+
+async def test_malformed_code_order_goes_out_untagged(httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(OKX_BROKER_ID_ENV, "BAD-CODE!")
+    req = await _place(httpx_mock)
+    assert req.content.decode() == UNCONFIGURED_BODY
+    assert "broker-id" not in req.headers
+    _assert_valid_signature(req)
+
+
+def test_malformed_warning_logs_length_not_value(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv(OKX_BROKER_ID_ENV, "BAD-CODE!")
+    with caplog.at_level("WARNING"):
+        okx_broker_id()
+    assert "BAD-CODE" not in caplog.text
+    assert "length=9" in caplog.text
