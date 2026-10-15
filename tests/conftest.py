@@ -98,6 +98,9 @@ def _nig_install():
         "sendto": sock_cls.sendto,
         "create_connection": _nig_socket.create_connection,
         "getaddrinfo": _nig_socket.getaddrinfo,
+        "gethostbyname": _nig_socket.gethostbyname,
+        "gethostbyname_ex": _nig_socket.gethostbyname_ex,
+        "getnameinfo": _nig_socket.getnameinfo,
         "loop_cc": _nig_base_events.BaseEventLoop.create_connection,
     }
 
@@ -139,6 +142,22 @@ def _nig_install():
             _nig_resolved_ok.update(r[4][0] for r in result)  # allow-listed name -> its IPs
         return result
 
+    def gethostbyname(host):
+        if not _nig_host_ok(host):
+            _nig_deny(host, "socket.gethostbyname (DNS)")
+        return real["gethostbyname"](host)
+
+    def gethostbyname_ex(host):
+        if not _nig_host_ok(host):
+            _nig_deny(host, "socket.gethostbyname_ex (DNS)")
+        return real["gethostbyname_ex"](host)
+
+    def getnameinfo(sockaddr, flags):
+        host = sockaddr[0] if isinstance(sockaddr, tuple) and sockaddr else sockaddr
+        if not _nig_host_ok(host):
+            _nig_deny(host, "socket.getnameinfo (DNS)")
+        return real["getnameinfo"](sockaddr, flags)
+
     async def loop_create_connection(self, protocol_factory, host=None, port=None, **kw):
         if kw.get("sock") is None and not _nig_host_ok(host):
             _nig_deny(host, "asyncio loop.create_connection")
@@ -147,12 +166,18 @@ def _nig_install():
     sock_cls.connect, sock_cls.connect_ex, sock_cls.sendto = connect, connect_ex, sendto
     _nig_socket.create_connection = create_connection
     _nig_socket.getaddrinfo = getaddrinfo
+    _nig_socket.gethostbyname = gethostbyname
+    _nig_socket.gethostbyname_ex = gethostbyname_ex
+    _nig_socket.getnameinfo = getnameinfo
     _nig_base_events.BaseEventLoop.create_connection = loop_create_connection
 
     def restore():
         sock_cls.connect, sock_cls.connect_ex, sock_cls.sendto = real["connect"], real["connect_ex"], real["sendto"]
         _nig_socket.create_connection = real["create_connection"]
         _nig_socket.getaddrinfo = real["getaddrinfo"]
+        _nig_socket.gethostbyname = real["gethostbyname"]
+        _nig_socket.gethostbyname_ex = real["gethostbyname_ex"]
+        _nig_socket.getnameinfo = real["getnameinfo"]
         _nig_base_events.BaseEventLoop.create_connection = real["loop_cc"]
 
     return restore
@@ -165,13 +190,17 @@ def pytest_configure(config):
     )
 
 
+# Installed at conftest import (before any test module is collected/imported) so that
+# collection-time connects (e.g. hardcoded dev DB hosts in module-level code) are denied
+# and logged too. The guard stays active for the whole process; the session fixture only
+# asserts that it is installed.
+_nig_restore = _nig_install()
+
+
 @_nig_pytest.fixture(autouse=True, scope="session")
 def _network_guard_session():
-    restore = _nig_install()
-    try:
-        yield
-    finally:
-        restore()
+    assert getattr(_nig_socket.socket.connect, "__name__", "") == "connect" and _nig_restore is not None
+    yield
 
 
 @_nig_pytest.fixture(autouse=True)
