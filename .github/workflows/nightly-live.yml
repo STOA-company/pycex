@@ -19,3 +19,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest -m live tests/live -q
+        env:
+          ALLOW_NETWORK_TESTS: "1" # live tests are rejected in CI without this flag
