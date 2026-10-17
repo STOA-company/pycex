@@ -127,6 +127,18 @@ _TIMEFRAME_MAP = {
 }
 
 
+_BROKER_CODE_PATTERN = re.compile(r"[A-Za-z0-9]{1,16}", re.ASCII)
+
+
+def _resolve_broker_code(broker_code: str | None) -> str:
+    """Instance code if given (even empty), else the module constant. Malformed -> ""."""
+    value = OKX_BROKER_ID if broker_code is None else broker_code
+    value = value.strip() if isinstance(value, str) else ""
+    if value and not _BROKER_CODE_PATTERN.fullmatch(value):
+        return ""
+    return value
+
+
 class OKX(BaseExchange):
     name = "okx"
     # history-candles caps `limit` at 100 (the recent /market/candles endpoint
@@ -150,7 +162,15 @@ class OKX(BaseExchange):
         td_mode: Literal["cross", "isolated"] = "cross",
         demo: bool | None = None,
         timeout: float = 30.0,
+        broker_code: str | None = None,
     ) -> None:
+        #: Per-instance OKX broker code (order ``tag`` + ``broker-id`` header).
+        #: ``None`` keeps the module constant (legacy). A non-None value wins even
+        #: when empty, and a malformed one (not 1-16 ASCII letters/digits) is
+        #: dropped so the order goes out untagged instead of being rejected.
+        #: One process may hold API-key and OAuth adapters side by side, each
+        #: with its own broker code, which a module-wide constant cannot express.
+        self._broker_code = _resolve_broker_code(broker_code)
         self._api_key = api_key
         self._secret = secret
         self._passphrase = passphrase
@@ -165,8 +185,8 @@ class OKX(BaseExchange):
         self._markets: dict[str, Market] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         broker_headers: dict[str, str] = {}
-        if OKX_BROKER_ID:
-            broker_headers["broker-id"] = OKX_BROKER_ID
+        if self._broker_code:
+            broker_headers["broker-id"] = self._broker_code
         self._http = HTTPClient(
             # ExchangeRateLimiter is the sole admission gate; keep HTTPClient from delaying after signing.
             OKX_BASE,
@@ -498,8 +518,8 @@ class OKX(BaseExchange):
         algo = _attached_algo_orders(tp_px, sl_px)
         if algo is not None:
             body["attachAlgoOrds"] = [algo]
-        if OKX_BROKER_ID:
-            body["tag"] = OKX_BROKER_ID
+        if self._broker_code:
+            body["tag"] = self._broker_code
         if price is not None:
             body["px"] = str(price)
         # posSide is intentionally omitted: this assumes the SWAP account is in
