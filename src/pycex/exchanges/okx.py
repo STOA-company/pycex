@@ -150,7 +150,15 @@ class OKX(BaseExchange):
         td_mode: Literal["cross", "isolated"] = "cross",
         demo: bool | None = None,
         timeout: float = 30.0,
+        broker_id: str | None = None,
     ) -> None:
+        if broker_id is not None and (
+            not isinstance(broker_id, str)
+            or (broker_id != "" and re.fullmatch(r"[A-Za-z0-9]{1,16}", broker_id) is None)
+        ):
+            raise InvalidOrderError("okx: invalid broker tag")
+        # None retains the legacy constant, including its body-time lookup.
+        self._broker_id = broker_id
         self._api_key = api_key
         self._secret = secret
         self._passphrase = passphrase
@@ -165,8 +173,9 @@ class OKX(BaseExchange):
         self._markets: dict[str, Market] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         broker_headers: dict[str, str] = {}
-        if OKX_BROKER_ID:
-            broker_headers["broker-id"] = OKX_BROKER_ID
+        selected_broker_id = OKX_BROKER_ID if broker_id is None else broker_id
+        if selected_broker_id:
+            broker_headers["broker-id"] = selected_broker_id
         self._http = HTTPClient(
             # ExchangeRateLimiter is the sole admission gate; keep HTTPClient from delaying after signing.
             OKX_BASE,
@@ -433,6 +442,7 @@ class OKX(BaseExchange):
         tgt_ccy: str | None = None,
         tp_px: float | None = None,
         sl_px: float | None = None,
+        position_mode: str | None = None,
     ) -> Order:
         """Place an order.
 
@@ -454,6 +464,14 @@ class OKX(BaseExchange):
         changed it. Every other order shape rejects it: on a limit order OKX
         ignores it, and a silently ignored parameter is worse than an error.
         """
+        # Validate the new option before even a spot account-config lookup.
+        # Omitted mode retains legacy reduce_only semantics. An explicit net
+        # request does not prove or change the venue account configuration.
+        if position_mode is not None:
+            if type(position_mode) is not str or position_mode != "net" or self.market_type != "linear":
+                raise InvalidOrderError("okx: only explicit SWAP net mode is supported")
+            if type(reduce_only) is not bool:
+                raise InvalidOrderError("okx: explicit mode requires boolean reduce_only")
         path = "/api/v5/trade/order"
         native = self.to_native(symbol)
         td_mode = self._td_mode if self.market_type == "linear" else await self._spot_td_mode()
@@ -466,6 +484,8 @@ class OKX(BaseExchange):
             "ordType": "limit" if order_type.lower() == "limit" else "market",
             "sz": str(amount),
         }
+        if position_mode is not None:
+            body["posSide"] = "net"
         if client_order_id is not None:
             body["clOrdId"] = _validated_client_order_id(client_order_id)
         is_spot_market = self.market_type == "spot" and body["ordType"] == "market"
@@ -498,13 +518,14 @@ class OKX(BaseExchange):
         algo = _attached_algo_orders(tp_px, sl_px)
         if algo is not None:
             body["attachAlgoOrds"] = [algo]
-        if OKX_BROKER_ID:
-            body["tag"] = OKX_BROKER_ID
+        selected_broker_id = OKX_BROKER_ID if self._broker_id is None else self._broker_id
+        if selected_broker_id:
+            body["tag"] = selected_broker_id
         if price is not None:
             body["px"] = str(price)
-        # posSide is intentionally omitted: this assumes the SWAP account is in
-        # one-way mode (OKX's default). A hedge-mode account requires
-        # posSide="long"/"short" on every order — see module docstring.
+        # Omitted mode keeps the legacy one-way assumption. Explicit net is a
+        # request option only; hedge support and actual mode binding remain
+        # outside this adapter slice.
         body_str = json.dumps(body)
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._auth_headers("POST", path, body_str))

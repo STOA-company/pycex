@@ -238,7 +238,14 @@ class Bitget(BaseExchange):
         market_type: MarketType = "spot",
         demo: bool | None = None,
         timeout: float = 30.0,
+        broker_id: str | None = None,
     ) -> None:
+        # This only rejects unsafe HTTP header values; it does not establish
+        # broker approval or an undocumented channel-code format.
+        if broker_id is not None and (
+            not isinstance(broker_id, str) or any(not 0x21 <= ord(ch) <= 0x7E for ch in broker_id)
+        ):
+            raise InvalidOrderError("bitget: invalid broker header value")
         self._api_key = api_key
         self._secret = secret
         self._passphrase = passphrase
@@ -248,8 +255,9 @@ class Bitget(BaseExchange):
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         self._product_type = "SUSDT-FUTURES" if (market_type == "linear" and self.sandbox) else "USDT-FUTURES"
         broker_headers: dict[str, str] = {}
-        if BITGET_BROKER_ID:
-            broker_headers["X-CHANNEL-API-CODE"] = BITGET_BROKER_ID
+        selected_broker_id = BITGET_BROKER_ID if broker_id is None else broker_id
+        if selected_broker_id:
+            broker_headers["X-CHANNEL-API-CODE"] = selected_broker_id
         self._http = HTTPClient(
             # ExchangeRateLimiter is the sole admission gate; keep HTTPClient from delaying after signing.
             BITGET_BASE,
@@ -458,7 +466,19 @@ class Bitget(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        reduce_only: bool = False,
+        position_mode: str | None = None,
     ) -> Order:
+        if type(reduce_only) is not bool:
+            raise InvalidOrderError("bitget: reduce_only must be a boolean")
+        if position_mode is not None and (
+            type(position_mode) is not str or position_mode != "net" or self.market_type != "linear"
+        ):
+            raise InvalidOrderError("bitget: only explicit linear one-way mode is supported")
+        if reduce_only and (self.market_type != "linear" or position_mode != "net"):
+            raise InvalidOrderError("bitget: reduction requires explicit linear one-way mode")
+        # V2 one-way reduceOnly can cancel existing account-wide reductions.
+        # This option is not evidence of cross-bot safety or provider approval.
         native = self.to_native(symbol)
         path = self._p("order")
         body: dict[str, Any]
@@ -487,6 +507,8 @@ class Bitget(BaseExchange):
                 body["force"] = "gtc"
                 if price is not None:
                     body["price"] = str(price)
+        if reduce_only:
+            body["reduceOnly"] = "YES"
         if client_order_id is not None:
             body["clientOid"] = client_order_id
         body_str = json.dumps(body)
