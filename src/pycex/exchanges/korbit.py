@@ -311,6 +311,8 @@ class Korbit(BaseExchange):
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
             raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="korbit")
+        if client_order_id and not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
+            raise InvalidOrderError("client_order_id must match [0-9a-zA-Z.:_-]{1,36}", exchange="korbit")
         native = self.to_native(symbol)
         key = {"clientOrderId": client_order_id} if client_order_id else {"orderId": order_id}
         async with self._rate_limiter.request("query"):
@@ -477,6 +479,23 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     amt = d.get("amt")
     amount = float(qty) if qty else float(amt or 0)
     price = d.get("price")
+    native = d.get("symbol")
+    if isinstance(native, str) and native.count("_") == 1:
+        base, quote = native.split("_")
+        symbol = f"{base.upper()}/{quote.upper()}" if base and quote else ""
+    elif native is not None:
+        symbol = ""
+    state = str(d.get("status", ""))
+    if state and state not in {
+        "pending",
+        "open",
+        "filled",
+        "canceled",
+        "partiallyFilled",
+        "partiallyFilledCanceled",
+        "expired",
+    }:
+        state = "unknown"
     return Order(
         id=str(d.get("orderId", "")),
         client_order_id=d.get("clientOrderId") or None,
@@ -486,7 +505,7 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
         amount=amount,
         price=float(price) if price not in (None, "") else None,
         filled=float(d.get("filledQty", 0) or 0),
-        status=str(d.get("status", "")),
+        status=state,
         timestamp=int(d.get("createdAt", 0) or 0),
         raw=d,
     )

@@ -20,6 +20,8 @@ class Order(BaseModel):
     amount: float
     price: float | None = None
     filled: float = 0.0
+    #: Actual execution average; never the caller's limit price.
+    average_price: float | None = None
     status: str = ""
     timestamp: int = 0
     raw: dict[str, Any] = {}  # noqa: RUF012

@@ -567,3 +567,27 @@ async def test_open_orders_echo_client_order_id(httpx_mock: HTTPXMock) -> None:
     ex = Korbit(api_key="k", secret=SECRET)
     assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
     await ex.close()
+
+
+def test_unknown_order_state_preserves_actual_market_1004():
+    raw = {
+        "orderId": 1234,
+        "symbol": "eth_krw",
+        "side": "buy",
+        "orderType": "limit",
+        "qty": "10",
+        "filledQty": "1",
+        "price": "5000",
+        "avgPrice": "4900",
+        "status": "new_undocumented_state",
+    }
+    order = _parse_order("BTC/KRW", raw)
+    assert order.status == "unknown" and order.symbol == "ETH/KRW"
+    assert order.raw == raw
+
+
+async def test_lookup_rejects_invalid_client_id_without_request_1004(httpx_mock: HTTPXMock):
+    async with Korbit(api_key="k", secret=SECRET) as ex:
+        with pytest.raises(InvalidOrderError):
+            await ex.fetch_order(None, "BTC/KRW", client_order_id="has space")
+    assert httpx_mock.get_requests() == []
