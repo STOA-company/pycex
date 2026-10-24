@@ -55,6 +55,7 @@ match user's setting."), which surfaces to the caller unchanged.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -75,6 +76,7 @@ from pycex.exceptions import (
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
+    NotSupportedError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -283,6 +285,55 @@ class Binance(BaseExchange):
             data = await self._http.get(self._p("premiumIndex"), params={"symbol": native})
         return _parse_funding(symbol, data)
 
+    async def set_margin_mode(self, symbol: str, mgn_mode: str) -> dict[str, Any]:
+        """Change this symbol's USDT-M margin mode, independently of leverage.
+
+        Binance ``-4046`` means the requested mode is already set. Its native
+        response is preserved; every other rejection propagates.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: margin mode requires market_type='linear'")
+        if mgn_mode not in ("cross", "isolated"):
+            raise InvalidOrderError("binance: mgn_mode must be 'cross' or 'isolated'", exchange="binance")
+        async with self._rate_limiter.request("query", weight=1):
+            params = self._signed_params(
+                {"symbol": self.to_native(symbol), "marginType": "CROSSED" if mgn_mode == "cross" else "ISOLATED"}
+            )
+            try:
+                data = await self._http.post("/fapi/v1/marginType", params=params, headers=self._auth_headers())
+            except ExchangeError as exc:
+                if str(exc.code) == "-4046":
+                    return {"code": exc.code, "msg": str(exc)}
+                raise
+        if not isinstance(data, dict) or str(data.get("code")) not in ("200", "-4046"):
+            if isinstance(data, dict) and data.get("code") is not None:
+                raise _map_error(str(data["code"]), str(data.get("msg", "Unknown error")))
+            raise ExchangeError("binance: incomplete margin-mode acknowledgement", exchange="binance")
+        return data
+
+    async def set_leverage(self, symbol: str, lever: float, mgn_mode: str | None = None) -> dict[str, Any]:
+        """Set USDT-M symbol leverage; only an explicit mode changes margin mode.
+
+        Leverage must be an integer >=1. The exchange enforces its current
+        symbol/risk-tier maximum; the SDK neither caps nor rounds the request.
+        A margin-mode change may succeed before a subsequent leverage failure.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: leverage requires market_type='linear'")
+        if isinstance(lever, bool) or not math.isfinite(lever) or lever < 1 or not float(lever).is_integer():
+            raise InvalidOrderError("binance: lever must be a finite integer >=1", exchange="binance")
+        if mgn_mode is not None:
+            await self.set_margin_mode(symbol, mgn_mode)
+        native = self.to_native(symbol)
+        async with self._rate_limiter.request("query", weight=1):
+            params = self._signed_params({"symbol": native, "leverage": int(lever)})
+            data = await self._http.post("/fapi/v1/leverage", params=params, headers=self._auth_headers())
+        if isinstance(data, dict) and "code" in data:
+            raise _map_error(str(data["code"]), str(data.get("msg", "Unknown error")))
+        if not isinstance(data, dict) or data.get("symbol") != native or data.get("leverage") != int(lever):
+            raise ExchangeError("binance: incomplete or mismatched leverage acknowledgement", exchange="binance")
+        return data
+
     # ── Trading ──
 
     async def create_order(
@@ -294,7 +345,12 @@ class Binance(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        reduce_only: bool = False,
     ) -> Order:
+        if not isinstance(reduce_only, bool):
+            raise InvalidOrderError("binance: reduce_only must be a boolean", exchange="binance")
+        if reduce_only and self.market_type != "linear":
+            raise NotSupportedError("binance: reduce_only requires market_type='linear'")
         native = self.to_native(symbol)
         params: dict[str, Any] = {
             "symbol": native,
@@ -304,20 +360,22 @@ class Binance(BaseExchange):
         }
         if client_order_id is not None:
             params["newClientOrderId"] = client_order_id
+        if reduce_only:
+            params["reduceOnly"] = "true"
         if price is not None:
             params["price"] = str(price)
             params["timeInForce"] = "GTC"
         async with self._rate_limiter.request("order", weight=1):
             params = self._signed_params(params)
             data = await self._http.post(self._p("order"), params=params, headers=self._auth_headers())
-        return _parse_order(symbol, data)
+        return _parse_order(symbol, _check_order_response(data))
 
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)
         async with self._rate_limiter.request("order", weight=1):
             params = self._signed_params({"symbol": native, "orderId": order_id})
             data = await self._http.delete(self._p("order"), params=params, headers=self._auth_headers())
-        return _parse_order(symbol, data)
+        return _parse_order(symbol, _check_order_response(data))
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
@@ -327,7 +385,7 @@ class Binance(BaseExchange):
         async with self._rate_limiter.request("query", weight=1 if self.market_type == "linear" else 4):
             params = self._signed_params({"symbol": native, **lookup})
             data = await self._http.get(self._p("order"), params=params, headers=self._auth_headers())
-        return _parse_order(symbol, data)
+        return _parse_order(symbol, _check_order_response(data))
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         p: dict[str, Any] = {}
@@ -531,7 +589,7 @@ def _parse_my_trade(symbol: str, t: dict[str, Any]) -> MyTrade:
 
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     return Order(
-        id=str(d.get("orderId", "")),
+        id=str(d.get("orderId") or ""),
         client_order_id=d.get("clientOrderId") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
@@ -539,16 +597,25 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
         amount=float(d.get("origQty", 0)),
         price=float(d["price"]) if d.get("price") and float(d["price"]) > 0 else None,
         filled=float(d.get("executedQty", 0)),
-        status=d.get("status", ""),
+        status=d.get("status") or "",
         timestamp=int(d.get("transactTime", 0) or d.get("time", 0) or d.get("updateTime", 0)),
         raw=d,
     )
 
 
+def _check_order_response(data: Any) -> dict[str, Any]:
+    """An empty ACK stays unknown; an error body is never parsed as an order."""
+    if not isinstance(data, dict):
+        raise ExchangeError("binance: incomplete order response; reconcile by client_order_id", exchange="binance")
+    if data.get("code") is not None:
+        raise _map_error(str(data["code"]), str(data.get("msg", "Unknown error")))
+    return data
+
+
 # ── Errors ──
 
 # Confirmed via developers.binance.com/docs/binance-spot-api-docs/errors (see module docstring).
-_INSUFFICIENT_BALANCE_CODES = frozenset({"-2010"})
+_INSUFFICIENT_BALANCE_CODES = frozenset({"-2010", "-2018", "-2019"})
 _AUTH_CODES = frozenset({"-2014", "-2015"})
 _ORDER_NOT_FOUND_CODES = frozenset({"-2013"})
 _RATE_LIMIT_CODES = frozenset({"-1003"})
