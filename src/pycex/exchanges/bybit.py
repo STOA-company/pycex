@@ -284,7 +284,9 @@ class Bybit(BaseExchange):
     async def _private_list(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for _ in range(20):
+        # A legal multi-symbol snapshot can exceed any fixed page count.
+        # Exhaust the venue cursor; repeated tokens still fail closed below.
+        while True:
             async with self._rate_limiter.request("query", group="private"):
                 full_path, headers = self._signed_get_request(path, params)
                 data = await self._http.get(full_path, headers=headers)
@@ -300,7 +302,6 @@ class Bybit(BaseExchange):
                 raise ExchangeError("bybit: private-list cursor repeated", exchange="bybit")
             seen.add(cursor)
             params = {**params, "cursor": cursor}
-        raise ExchangeError("bybit: private-list page limit exceeded", exchange="bybit")
 
     async def fetch_positions(self, symbols: list[str] | None = None) -> list[Position]:
         self._require_linear()

@@ -22,7 +22,7 @@
 - Bybit `fetch_account_config()` reads `/v5/account/info`; `fetch_leverage(symbol, 'isolated')` reads `/v5/position/symbol-info`, including flat symbols.
 - Bybit `fetch_positions(symbols=None)` reads paginated `/v5/position/list` with settleCoin=USDT, or queries the explicitly selected symbols.
 - Position amount remains positive; direction comes from side Buy/Sell. Empty leverage/liqPrice stay None; deprecated tradeMode never infers margin_mode.
-- Symbol-less Bybit open-order lookup supplies settleCoin=USDT; pagination rejects repeated cursors or excess pages rather than returning a partial snapshot.
+- Symbol-less Bybit open-order lookup supplies settleCoin=USDT; private lists exhaust nextPageCursor without a page-count cap, rejecting repeated/cyclic cursors instead of returning a partial snapshot (401 single-symbol / 1001 multi-symbol regression).
 - Bybit create/cancel ACKs retain status='' and filled=0; only a later query's native orderStatus supplies terminal/partial state.
 - Empty/missing envelopes or lookup lists raise ExchangeError, not OrderNotFoundError. A confirmed empty realtime+history lookup still raises OrderNotFoundError.
 - After a lost response: retain the same client ID and query, never blindly recreate. Timeout/unknown is not proof of rejection or completion.

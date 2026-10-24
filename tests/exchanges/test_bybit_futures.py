@@ -250,12 +250,67 @@ async def test_linear_open_orders_settlement_pagination(httpx_mock: HTTPXMock) -
     assert orders[0].status == "PartiallyFilled" and orders[0].filled == 0.01
 
 
-async def test_private_cursor_cycle_is_not_partial_success(httpx_mock: HTTPXMock) -> None:
-    for _ in range(2):
-        httpx_mock.add_response(json={"retCode": 0, "result": {"list": [], "nextPageCursor": "repeat"}})
+@pytest.mark.parametrize("symbol,total", [(SYMBOL, 401), (None, 1001)])
+async def test_linear_open_orders_exhaust_cursor_beyond_twenty_pages(
+    httpx_mock: HTTPXMock, symbol: str | None, total: int
+) -> None:
+    # Default page size is 20; futures allow 500 active orders per symbol.
+    rows = [
+        {
+            "symbol": "BTCUSDT" if symbol or index < 500 else "ETHUSDT" if index < 1000 else "SOLUSDT",
+            "orderId": f"order-{index}",
+            "orderStatus": "New",
+            "qty": "0.01",
+            "cumExecQty": "0",
+        }
+        for index in range(total)
+    ]
+    for start in range(0, total, 20):
+        next_cursor = f"page-{start + 20}" if start + 20 < total else ""
+        httpx_mock.add_response(
+            json={"retCode": 0, "result": {"list": rows[start : start + 20], "nextPageCursor": next_cursor}}
+        )
+    async with Bybit(api_key="k", secret="s", market_type="linear") as ex:
+        orders = await ex.fetch_open_orders(symbol)
+    assert [order.id for order in orders] == [row["orderId"] for row in rows]
+    assert [order.symbol for order in orders] == [
+        "BTC/USDT:USDT"
+        if row["symbol"] == "BTCUSDT"
+        else "ETH/USDT:USDT"
+        if row["symbol"] == "ETHUSDT"
+        else "SOL/USDT:USDT"
+        for row in rows
+    ]
+    requests = httpx_mock.get_requests()
+    assert len(requests) == (total + 19) // 20
+    for page, request in enumerate(requests):
+        assert request.url.path == "/v5/order/realtime"
+        assert request.url.params["category"] == "linear"
+        if symbol:
+            assert request.url.params["symbol"] == "BTCUSDT" and "settleCoin" not in request.url.params
+        else:
+            assert request.url.params["settleCoin"] == "USDT" and "symbol" not in request.url.params
+        assert request.url.params.get("cursor") == (f"page-{page * 20}" if page else None)
+        _assert_valid_get_signature(request)
+
+
+@pytest.mark.parametrize("operation", ["orders", "positions", "leverage"])
+@pytest.mark.parametrize("cursors", [("repeat", "repeat"), ("page-a", "page-b", "page-a")])
+async def test_private_cursor_cycle_is_not_partial_success(
+    httpx_mock: HTTPXMock, operation: str, cursors: tuple[str, ...]
+) -> None:
+    row = {"symbol": "BTCUSDT", "orderId": "7", "size": "1", "side": "Buy", "leverage": "3"}
+    for cursor in cursors:
+        httpx_mock.add_response(json={"retCode": 0, "result": {"list": [row], "nextPageCursor": cursor}})
     async with Bybit(api_key="k", secret="s", market_type="linear") as ex:
         with pytest.raises(ExchangeError, match="cursor repeated"):
-            await ex.fetch_open_orders()
+            if operation == "orders":
+                await ex.fetch_open_orders()
+            elif operation == "positions":
+                await ex.fetch_positions()
+            else:
+                await ex.fetch_leverage(SYMBOL)
+    assert len(httpx_mock.get_requests()) == len(cursors)
 
 
 async def test_cancel_ack_then_query_terminal_status(httpx_mock: HTTPXMock) -> None:
