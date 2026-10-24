@@ -1,4 +1,4 @@
-"""Bitget V2 exchange adapter — spot (``/api/v2/spot/...``) and USDT-margined
+"""Bitget classic V2 / UTA V3 exchange adapter — spot (``/api/v2/spot/...``) and USDT-margined
 linear perpetual futures (``/api/v2/mix/...``, ``market_type="linear"``).
 
 Both market types share the same host (``api.bitget.com``); only the path
@@ -92,16 +92,19 @@ independently maintained third-party mapping of Bitget's real wire format):
   *not* also sent in that case (only for spot sandbox, unchanged from the
   existing/previously-shipped behavior).
 
-Inverse (coin-margined) perpetuals and hedge-mode (``tradeSide``) are out of
-scope — only USDT-settled linear in one-way mode, matching the OKX/Binance
-adapters' posture in this phase.
+Classic inverse (coin-margined) perpetuals and hedge-mode (``tradeSide``) are
+out of scope. UTA private account/order endpoints use ``account_type="uta"``;
+UTA futures additionally accept ``pos_side`` for hedge positions. No order is
+replayed after an account-mode error. See ``docs/w6-bitget-contract.md`` for
+official v3 references, account selection and demo behavior (2026-10-24).
 """
 
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 from pycex.auth import bitget_headers
@@ -113,6 +116,7 @@ from pycex.exceptions import (
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
+    NotSupportedError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -205,8 +209,26 @@ _PATHS: dict[str, dict[str, str]] = {
 }
 
 
+# UTA uses the same authentication but a different private wire contract.
+# Public v2 market data remains account-independent.
+_UTA_PATHS = {
+    "balance": "/api/v3/account/assets",
+    "positions": "/api/v3/position/current-position",
+    "order": "/api/v3/trade/place-order",
+    "cancel": "/api/v3/trade/cancel-order",
+    "orderInfo": "/api/v3/trade/order-info",
+    "openOrders": "/api/v3/trade/unfilled-orders",
+    "fills": "/api/v3/trade/fills",
+}
+
+
 class Bitget(BaseExchange):
-    """Bitget V2 spot exchange and USDT-margined linear perpetual futures.
+    """Bitget classic V2 or UTA V3 spot and USDT linear perpetual futures.
+
+    Select ``account_type="uta"`` before the first write for UTA accounts.
+    ``fetch_account_config`` / ``detect_account_type`` are read-only probes;
+    neither changes this instance nor retries orders. UTA demo uses ordinary
+    symbols and the ``paptrading`` header for both market types.
 
     Paper trading: pass ``sandbox=True``. For ``market_type="spot"`` this
     routes private calls to Bitget's header-based demo trading
@@ -236,9 +258,13 @@ class Bitget(BaseExchange):
         *,
         sandbox: bool = False,
         market_type: MarketType = "spot",
+        account_type: Literal["classic", "uta"] = "classic",
         demo: bool | None = None,
         timeout: float = 30.0,
     ) -> None:
+        if account_type not in ("classic", "uta"):
+            raise ValueError("bitget: account_type must be 'classic' or 'uta'")
+        self.account_type = account_type
         self._api_key = api_key
         self._secret = secret
         self._passphrase = passphrase
@@ -246,7 +272,8 @@ class Bitget(BaseExchange):
         self.sandbox = self._resolve_sandbox(sandbox, None, demo)
         self._markets: dict[str, Market] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
-        self._product_type = "SUSDT-FUTURES" if (market_type == "linear" and self.sandbox) else "USDT-FUTURES"
+        self._classic_demo = market_type == "linear" and self.sandbox and account_type == "classic"
+        self._product_type = "SUSDT-FUTURES" if self._classic_demo else "USDT-FUTURES"
         broker_headers: dict[str, str] = {}
         if BITGET_BROKER_ID:
             broker_headers["X-CHANNEL-API-CODE"] = BITGET_BROKER_ID
@@ -260,7 +287,51 @@ class Bitget(BaseExchange):
         )
 
     def _p(self, name: str) -> str:
+        if self.account_type == "uta" and name in _UTA_PATHS:
+            return _UTA_PATHS[name]
         return _PATHS[self.market_type][name]
+
+    @property
+    def _category(self) -> str:
+        return "USDT-FUTURES" if self.market_type == "linear" else "SPOT"
+
+    def _uta_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        self._check(data)
+        result = data.get("data")
+        if data.get("code") != "00000" or not isinstance(result, dict):
+            raise ExchangeError("bitget: incomplete UTA response", exchange=self.name)
+        return result
+
+    def _uta_list(self, data: dict[str, Any], key: str = "list") -> list[dict[str, Any]]:
+        rows = self._uta_data(data).get(key)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ExchangeError("bitget: incomplete UTA list response", exchange=self.name)
+        return rows
+
+    async def _uta_paginated_rows(
+        self, name: str, params: dict[str, Any], *, native: str | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Exhaust UTA cursors or collect ``limit`` matching rows; never return a partial scan on error."""
+        params = {**params, "limit": str(min(limit, 100) if limit is not None else 100)}
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        while True:
+            path = self._path(self._p(name), params)
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get(path, headers=self._signed_get(path))
+            rows = self._uta_list(data)
+            cursor = self._uta_data(data).get("cursor")
+            if cursor is not None and not isinstance(cursor, str):
+                raise ExchangeError("bitget: invalid UTA pagination cursor", exchange=self.name)
+            if cursor and cursor in seen:
+                raise ExchangeError("bitget: repeated UTA pagination cursor", exchange=self.name)
+            result.extend(row for row in rows if native is None or row.get("symbol") == native)
+            if limit is not None and len(result) >= limit:
+                return result[:limit]
+            if not rows or not cursor:
+                return result
+            seen.add(cursor)
+            params["cursor"] = cursor
 
     def to_native(self, symbol: str) -> str:
         sym = parse_symbol(symbol)
@@ -269,7 +340,7 @@ class Bitget(BaseExchange):
                 raise SymbolNotFoundError(
                     f"bitget: inverse/cross-settle perpetuals are out of scope (USDT-settled only): {symbol!r}"
                 )
-            prefix = "S" if self.sandbox else ""
+            prefix = "S" if self._classic_demo else ""
             return f"{prefix}{sym.base}{prefix}{sym.quote}"
         return f"{sym.base}{sym.quote}"
 
@@ -277,12 +348,12 @@ class Bitget(BaseExchange):
         if native in self._markets:
             return self._markets[native].symbol
         if self.market_type == "linear":
-            suffixes = [f"S{q}" for q in QUOTE_SUFFIXES] if self.sandbox else list(QUOTE_SUFFIXES)
+            suffixes = [f"S{q}" for q in QUOTE_SUFFIXES] if self._classic_demo else list(QUOTE_SUFFIXES)
             for suf in suffixes:
                 if native.endswith(suf) and len(native) > len(suf):
                     base = native[: -len(suf)]
-                    quote = suf[1:] if self.sandbox else suf
-                    if self.sandbox and base.startswith("S"):
+                    quote = suf[1:] if self._classic_demo else suf
+                    if self._classic_demo and base.startswith("S"):
                         base = base[1:]
                     return make_linear_symbol(base, quote, quote)
             raise SymbolNotFoundError(f"cannot resolve native symbol {native!r} for {self.name}")
@@ -310,11 +381,11 @@ class Bitget(BaseExchange):
         return []
 
     def _signed_get(self, path: str) -> dict[str, str]:
-        demo = self.sandbox and self.market_type != "linear"
+        demo = self.sandbox and not self._classic_demo
         return bitget_headers(self._api_key, self._secret, self._passphrase, "GET", path, "", demo=demo)
 
     def _signed_post(self, path: str, body: str) -> dict[str, str]:
-        demo = self.sandbox and self.market_type != "linear"
+        demo = self.sandbox and not self._classic_demo
         return bitget_headers(self._api_key, self._secret, self._passphrase, "POST", path, body, demo=demo)
 
     @staticmethod
@@ -410,27 +481,112 @@ class Bitget(BaseExchange):
     # ── Account ──
 
     async def fetch_balance(self) -> Balance:
-        params = self._mix_params() if self.market_type == "linear" else None
+        params = self._mix_params() if self.market_type == "linear" and self.account_type == "classic" else None
         path = self._path(self._p("balance"), params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, headers=self._signed_get(path))
+        if self.account_type == "uta":
+            return _parse_balance(self._uta_list(data, "assets"), data)
         result = self._check(data)
         if self.market_type == "linear":
             return _parse_balance_linear(result, data)
         return _parse_balance(result, data)
 
+    async def fetch_account_config(self) -> dict[str, Any]:
+        """Read account mode without changing either exchange or adapter state."""
+        path = "/api/v3/account/settings"
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get(path, headers=self._signed_get(path))
+        return self._uta_data(data)
+
+    async def detect_account_type(self) -> Literal["uta"]:
+        """Confirm UTA from settings before constructing the trading adapter.
+
+        Settings documents unified/hybrid modes, not a stable classic value.
+        Errors, transitions and unknown modes are never assumed to be classic.
+        """
+        settings = await self.fetch_account_config()
+        if settings.get("accountMode") in ("unified", "hybrid"):
+            return "uta"
+        raise ExchangeError("bitget: account mode is transitional or unknown", exchange=self.name)
+
+    async def set_margin_mode(self, symbol: str, margin_mode: str) -> dict[str, Any]:
+        """Explicit classic futures configuration; never run implicitly on order."""
+        if self.market_type != "linear" or self.account_type != "classic":
+            raise NotSupportedError("bitget: set_margin_mode applies to classic linear futures")
+        mode = _margin_mode(margin_mode)
+        path = "/api/v2/mix/account/set-margin-mode"
+        body = self._mix_params({"symbol": self.to_native(symbol), "marginCoin": "USDT", "marginMode": mode})
+        body_str = json.dumps(body)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
+        row = self._uta_data(data)
+        if row.get("marginMode") != mode:
+            raise ExchangeError("bitget: incomplete margin mode acknowledgement", exchange=self.name)
+        return row
+
+    async def set_leverage(
+        self, symbol: str, lever: float, mgn_mode: str = "cross", *, pos_side: str | None = None
+    ) -> dict[str, Any]:
+        if self.market_type != "linear":
+            raise NotSupportedError("bitget: leverage applies to linear futures only")
+        mode = _margin_mode(mgn_mode)
+        if not math.isfinite(lever) or lever <= 0:
+            raise InvalidOrderError("bitget: lever must be finite and positive", exchange=self.name)
+        if pos_side not in (None, "long", "short"):
+            raise InvalidOrderError("bitget: pos_side must be long or short", exchange=self.name)
+        if self.account_type == "uta":
+            if mode == "isolated" and pos_side is None:
+                raise InvalidOrderError("bitget: isolated UTA leverage requires pos_side", exchange=self.name)
+            path = "/api/v3/account/set-leverage"
+            body: dict[str, Any] = {
+                "category": self._category,
+                "symbol": self.to_native(symbol),
+                "leverage": str(lever),
+                "marginMode": mode,
+            }
+            if pos_side is not None:
+                body["posSide"] = pos_side
+        else:
+            path = "/api/v2/mix/account/set-leverage"
+            body = self._mix_params(
+                {
+                    "symbol": self.to_native(symbol),
+                    "marginCoin": "USDT",
+                    "leverage": str(lever),
+                }
+            )
+            if pos_side is not None:
+                body["holdSide"] = pos_side
+        body_str = json.dumps(body)
+        async with self._rate_limiter.request("query"):
+            data: dict[str, Any] = await self._http.post_raw(
+                path, body=body_str, headers=self._signed_post(path, body_str)
+            )
+        self._check(data)
+        result = data.get("data")
+        if data.get("code") != "00000" or (
+            result != "success" if self.account_type == "uta" else not isinstance(result, dict) or not result
+        ):
+            raise ExchangeError("bitget: incomplete leverage setting response", exchange=self.name)
+        return data
+
     async def fetch_positions(self, symbols: list[str] | None = None) -> list[Position]:
         if self.market_type != "linear":
             return await super().fetch_positions(symbols)
-        params = self._mix_params({"marginCoin": "USDT"})
+        params = (
+            {"category": self._category} if self.account_type == "uta" else self._mix_params({"marginCoin": "USDT"})
+        )
         path = self._path(self._p("positions"), params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, headers=self._signed_get(path))
-        result = self._check(data)
+        result = self._uta_list(data) if self.account_type == "uta" else self._check(data)
+        parser = _parse_position_uta if self.account_type == "uta" else _parse_position
         positions = [
-            _parse_position(self.from_native(str(p.get("symbol", ""))), p)
+            parser(self.from_native(str(p.get("symbol", ""))), p)
             for p in result
-            if float(p.get("total", 0) or 0) != 0
+            if (_uta_number(p.get("total"), "total") if self.account_type == "uta" else float(p.get("total", 0) or 0))
+            != 0
         ]
         if symbols is not None:
             wanted = set(symbols)
@@ -458,22 +614,55 @@ class Bitget(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        margin_mode: str = "crossed",
+        reduce_only: bool = False,
+        pos_side: str | None = None,
+        time_in_force: str = "gtc",
     ) -> Order:
+        if not math.isfinite(amount) or amount <= 0:
+            raise InvalidOrderError("bitget: amount must be finite and positive", exchange=self.name)
+        if order_type.lower() == "limit" and (price is None or not math.isfinite(price) or price <= 0):
+            raise InvalidOrderError("bitget: limit price must be finite and positive", exchange=self.name)
+        mode = _margin_mode(margin_mode)
+        if self.market_type != "linear" and (mode != "crossed" or reduce_only or pos_side is not None):
+            raise InvalidOrderError("bitget: futures options require market_type='linear'", exchange=self.name)
+        if pos_side not in (None, "long", "short") or (pos_side is not None and self.account_type != "uta"):
+            raise InvalidOrderError("bitget: pos_side requires UTA and long or short", exchange=self.name)
+        if time_in_force not in ("gtc", "ioc", "fok", "post_only"):
+            raise InvalidOrderError("bitget: invalid time_in_force", exchange=self.name)
         native = self.to_native(symbol)
         path = self._p("order")
         body: dict[str, Any]
-        if self.market_type == "linear":
+        if self.account_type == "uta":
+            body = {
+                "category": self._category,
+                "symbol": native,
+                "side": side.lower(),
+                "orderType": order_type.lower(),
+                "qty": str(amount),
+            }
+            if order_type.lower() == "limit":
+                body["timeInForce"] = time_in_force
+                if price is not None:
+                    body["price"] = str(price)
+            if self.market_type == "linear":
+                body["marginMode"] = mode
+                if reduce_only:
+                    body["reduceOnly"] = "yes"
+                if pos_side is not None:
+                    body["posSide"] = pos_side
+        elif self.market_type == "linear":
             body = {
                 "symbol": native,
                 "productType": self._product_type,
-                "marginMode": "crossed",
+                "marginMode": mode,
                 "marginCoin": "USDT",
                 "size": str(amount),
                 "side": side.lower(),
                 "orderType": "limit" if order_type.lower() == "limit" else "market",
             }
             if order_type.lower() == "limit":
-                body["force"] = "gtc"
+                body["force"] = time_in_force
                 if price is not None:
                     body["price"] = str(price)
         else:
@@ -484,18 +673,20 @@ class Bitget(BaseExchange):
                 "size": str(amount),
             }
             if order_type.lower() == "limit":
-                body["force"] = "gtc"
+                body["force"] = time_in_force
                 if price is not None:
                     body["price"] = str(price)
+        if self.market_type == "linear" and self.account_type == "classic" and reduce_only:
+            body["reduceOnly"] = "YES"
         if client_order_id is not None:
             body["clientOid"] = client_order_id
         body_str = json.dumps(body)
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
         r = self._check(data)
-        first = r[0] if r else {}
+        first = self._uta_data(data) if self.account_type == "uta" else (r[0] if r else {})
         return Order(
-            id=first.get("orderId", ""),
+            id=first.get("orderId") or "",
             client_order_id=first.get("clientOid") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
@@ -509,7 +700,9 @@ class Bitget(BaseExchange):
         native = self.to_native(symbol)
         path = self._p("cancel")
         body: dict[str, Any]
-        if self.market_type == "linear":
+        if self.account_type == "uta":
+            body = {"category": self._category, "orderId": order_id}
+        elif self.market_type == "linear":
             body = self._mix_params({"symbol": native, "orderId": order_id})
         else:
             body = {"symbol": native, "orderId": order_id}
@@ -517,7 +710,7 @@ class Bitget(BaseExchange):
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
         r = self._check(data)
-        first = r[0] if r else {}
+        first = self._uta_data(data) if self.account_type == "uta" else (r[0] if r else {})
         return Order(id=first.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
@@ -526,7 +719,9 @@ class Bitget(BaseExchange):
         native = self.to_native(symbol)
         lookup = {"clientOid": client_order_id} if client_order_id else {"orderId": order_id}
         params: dict[str, Any]
-        if self.market_type == "linear":
+        if self.account_type == "uta":
+            params = lookup
+        elif self.market_type == "linear":
             params = self._mix_params({"symbol": native, **lookup})
         else:
             # Bitget's spot order-info endpoint has no symbol filter to convert.
@@ -534,6 +729,15 @@ class Bitget(BaseExchange):
         path = self._path(self._p("orderInfo"), params)
         async with self._rate_limiter.request("query"):
             data = await self._http.get(path, headers=self._signed_get(path))
+        if self.account_type == "uta":
+            row = self._uta_data(data)
+            if not row.get("orderId") or row.get("symbol") != native or row.get("category") != self._category:
+                raise ExchangeError("bitget: incomplete or mismatched UTA order", exchange=self.name)
+            if (order_id and row["orderId"] != order_id) or (
+                client_order_id and row.get("clientOid") != client_order_id
+            ):
+                raise ExchangeError("bitget: UTA order does not match lookup key", exchange=self.name)
+            return _parse_order_uta(symbol, row)
         r = self._check(data)
         if not r:
             return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
@@ -541,8 +745,14 @@ class Bitget(BaseExchange):
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         native = self.to_native(symbol) if symbol else None
+        if self.account_type == "uta":
+            params: dict[str, Any] = {"category": self._category}
+            if native:
+                params["symbol"] = native
+            rows = await self._uta_paginated_rows("openOrders", params)
+            return [_parse_order_uta(self.from_native(o["symbol"]), o) for o in rows]
         if self.market_type == "linear":
-            params: dict[str, Any] = self._mix_params({"symbol": native} if native else None)
+            params = self._mix_params({"symbol": native} if native else None)
             path = self._path(self._p("openOrders"), params)
             async with self._rate_limiter.request("query"):
                 data = await self._http.get(path, headers=self._signed_get(path))
@@ -559,8 +769,17 @@ class Bitget(BaseExchange):
         if symbol is None:
             raise ValueError(f"bitget:{self.market_type} requires symbol for my trades")
         native = self.to_native(symbol)
+        if self.account_type == "uta":
+            # v3 fills has no symbol query parameter: limit applies after filtering across pages.
+            if limit is not None and limit <= 0:
+                raise ValueError("bitget: UTA trade limit must be positive")
+            params: dict[str, Any] = {"category": self._category}
+            if since is not None:
+                params["startTime"] = str(since)
+            rows = await self._uta_paginated_rows("fills", params, native=native, limit=limit)
+            return [_parse_my_trade_uta(symbol, t) for t in rows]
         if self.market_type == "linear":
-            params: dict[str, Any] = self._mix_params({"symbol": native})
+            params = self._mix_params({"symbol": native})
             if since is not None:
                 params["startTime"] = str(since)
             if limit is not None:
@@ -583,6 +802,77 @@ class Bitget(BaseExchange):
 
 
 # ── Parsers ──
+
+
+def _margin_mode(mode: str) -> str:
+    if mode in ("cross", "crossed"):
+        return "crossed"
+    if mode == "isolated":
+        return mode
+    raise InvalidOrderError("bitget: margin mode must be crossed or isolated", exchange="bitget")
+
+
+def _uta_number(value: Any, field: str) -> float:
+    try:
+        number = float(value)
+    except (ValueError, TypeError):
+        raise ExchangeError(f"bitget: missing or invalid UTA {field}", exchange="bitget") from None
+    if not math.isfinite(number):
+        raise ExchangeError(f"bitget: nonfinite UTA {field}", exchange="bitget")
+    return number
+
+
+def _parse_order_uta(symbol: str, d: dict[str, Any]) -> Order:
+    # Spot market buys report quote amount separately; qty is base quantity.
+    amount_field = (
+        "amount" if d.get("category") == "SPOT" and d.get("side") == "buy" and d.get("orderType") == "market" else "qty"
+    )
+    return Order(
+        id=str(d.get("orderId", "")),
+        client_order_id=d.get("clientOid") or None,
+        symbol=symbol,
+        side=d.get("side", "").lower(),
+        type=d.get("orderType", "").lower(),
+        amount=_uta_number(d.get(amount_field), amount_field),
+        price=_none_if_zero(d.get("price")),
+        filled=_uta_number(d.get("cumExecQty"), "cumExecQty"),
+        status=d.get("orderStatus", ""),
+        timestamp=int(d.get("createdTime", 0) or 0),
+        raw=d,
+    )
+
+
+def _parse_position_uta(symbol: str, d: dict[str, Any]) -> Position:
+    if d.get("posSide") not in ("long", "short"):
+        raise ExchangeError("bitget: missing or invalid UTA position side", exchange="bitget")
+    return Position(
+        symbol=symbol,
+        side=d["posSide"],
+        amount=abs(_uta_number(d.get("total"), "total")),
+        entry_price=_none_if_zero(d.get("avgPrice")),
+        unrealized_pnl=_uta_number(d.get("unrealisedPnl", 0), "unrealisedPnl"),
+        leverage=_none_if_zero(d.get("leverage")),
+        liquidation_price=_none_if_zero(d.get("liquidationPrice")),
+        timestamp=int(d.get("createdTime", 0) or 0),
+        raw=d,
+    )
+
+
+def _parse_my_trade_uta(symbol: str, d: dict[str, Any]) -> MyTrade:
+    fees = d.get("feeDetail") or []
+    fee = fees[0] if fees else {}
+    return MyTrade(
+        id=str(d["execId"]),
+        order_id=str(d["orderId"]),
+        symbol=symbol,
+        side=d["side"].lower(),
+        price=_uta_number(d.get("execPrice"), "execPrice"),
+        amount=_uta_number(d.get("execQty"), "execQty"),
+        fee=float(fee.get("fee", 0) or 0),
+        fee_asset=fee.get("feeCoin") or "",
+        timestamp=int(d.get("createdTime", 0) or 0),
+        raw=d,
+    )
 
 
 def _parse_ticker(symbol: str, d: dict[str, Any]) -> Ticker:
