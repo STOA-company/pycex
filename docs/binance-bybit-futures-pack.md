@@ -37,3 +37,4 @@
 - Official Bybit position/leverage: https://bybit-exchange.github.io/docs/v5/position and https://bybit-exchange.github.io/docs/v5/position/leverage
 - Official Bybit settings: https://bybit-exchange.github.io/docs/v5/account/set-margin-mode and https://bybit-exchange.github.io/docs/v5/position/batch-lvg
 - Official Bybit config/errors: https://bybit-exchange.github.io/docs/v5/account/account-info and https://bybit-exchange.github.io/docs/v5/error
+- Single-order lookup requires the requested order/client ID and native symbol; a missing/foreign/ambiguous identity raises ExchangeError rather than becoming the customer's fill. Bybit selects one matching row, never blindly the first.

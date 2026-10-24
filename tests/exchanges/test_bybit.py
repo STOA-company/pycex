@@ -475,7 +475,10 @@ def test_duplicate_client_id_maps_to_reconciliation_error_sync(httpx_mock: HTTPX
 async def test_fetch_order_by_client_id_falls_back_to_history(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json={"retCode": 0, "result": {"list": []}})
     httpx_mock.add_response(
-        json={"retCode": 0, "result": {"list": [{"orderId": "o1", "orderLinkId": "q1", "qty": "0.01"}]}}
+        json={
+            "retCode": 0,
+            "result": {"list": [{"orderId": "o1", "symbol": "BTCUSDT", "orderLinkId": "q1", "qty": "0.01"}]},
+        }
     )
     async with Bybit(api_key="k", secret=SECRET) as ex:
         order = await ex.fetch_order(None, "BTC/USDT", client_order_id="q1")
@@ -489,7 +492,9 @@ async def test_fetch_order_by_client_id_falls_back_to_history(httpx_mock: HTTPXM
 
 
 async def test_fetch_order_realtime_hit_skips_history(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [{"orderId": "o1", "qty": "0.01"}]}})
+    httpx_mock.add_response(
+        json={"retCode": 0, "result": {"list": [{"orderId": "o1", "symbol": "BTCUSDT", "qty": "0.01"}]}}
+    )
     async with Bybit(api_key="k", secret=SECRET) as ex:
         order = await ex.fetch_order("o1", "BTC/USDT")
     assert order.id == "o1"
@@ -507,7 +512,9 @@ async def test_fetch_order_not_found_after_both_sources(httpx_mock: HTTPXMock) -
 
 async def test_fetch_order_realtime_not_found_code_uses_history(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json={"retCode": 110001, "retMsg": "Order does not exist", "result": {}})
-    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [{"orderId": "o1", "qty": "0.01"}]}})
+    httpx_mock.add_response(
+        json={"retCode": 0, "result": {"list": [{"orderId": "o1", "symbol": "BTCUSDT", "qty": "0.01"}]}}
+    )
     async with Bybit(api_key="k", secret=SECRET) as ex:
         order = await ex.fetch_order("o1", "BTC/USDT")
     assert order.id == "o1"

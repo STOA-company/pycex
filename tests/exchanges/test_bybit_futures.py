@@ -260,7 +260,9 @@ async def test_private_cursor_cycle_is_not_partial_success(httpx_mock: HTTPXMock
 
 async def test_cancel_ack_then_query_terminal_status(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(json={"retCode": 0, "result": {"orderId": "7"}})
-    httpx_mock.add_response(json={"retCode": 0, "result": {"list": [{"orderId": "7", "orderStatus": "Cancelled"}]}})
+    httpx_mock.add_response(
+        json={"retCode": 0, "result": {"list": [{"orderId": "7", "symbol": "BTCUSDT", "orderStatus": "Cancelled"}]}}
+    )
     async with Bybit(api_key="k", secret="s", market_type="linear") as ex:
         ack = await ex.cancel_order("7", SYMBOL)
         assert ack.status == "" and ack.filled == 0
@@ -278,7 +280,17 @@ async def test_lost_create_response_reconciles_same_client_id_in_history(httpx_m
     httpx_mock.add_response(
         json={
             "retCode": 0,
-            "result": {"list": [{"orderId": "7", "orderLinkId": "w6-close", "orderStatus": "New", "qty": "0.01"}]},
+            "result": {
+                "list": [
+                    {
+                        "orderId": "7",
+                        "symbol": "BTCUSDT",
+                        "orderLinkId": "w6-close",
+                        "orderStatus": "New",
+                        "qty": "0.01",
+                    }
+                ]
+            },
         }
     )
     async with Bybit(api_key="k", secret="s", market_type="linear") as ex:
@@ -334,3 +346,37 @@ def test_sync_futures_order_leverage_and_positions(httpx_mock: HTTPXMock) -> Non
     assert ex.set_leverage_sync(SYMBOL, 3)["retCode"] == 0
     assert ex.create_order_sync(SYMBOL, "sell", "market", 0.01, reduce_only=True).status == ""
     assert ex.fetch_positions_sync() == []
+
+
+@pytest.mark.parametrize(
+    "lookup,row",
+    [
+        ({"order_id": "7"}, {"orderId": "99", "symbol": "BTCUSDT"}),
+        (
+            {"order_id": None, "client_order_id": "w6-close"},
+            {"orderId": "7", "orderLinkId": "foreign", "symbol": "BTCUSDT"},
+        ),
+        ({"order_id": "7"}, {"orderId": "7", "symbol": "ETHUSDT"}),
+        ({"order_id": None, "client_order_id": "w6-close"}, {"orderId": "7", "symbol": "BTCUSDT"}),
+        ({"order_id": "7"}, {"orderId": "7"}),
+    ],
+)
+async def test_lookup_rejects_foreign_or_unconfirmed_identity(httpx_mock: HTTPXMock, lookup: dict, row: dict) -> None:
+    httpx_mock.add_response(
+        json={"retCode": 0, "result": {"list": [{**row, "orderStatus": "Filled", "cumExecQty": "1"}]}}
+    )
+    async with Bybit(api_key="k", secret="s", market_type="linear") as ex:
+        with pytest.raises(ExchangeError, match="lookup"):
+            await ex.fetch_order(symbol=SYMBOL, **lookup)
+    assert len(httpx_mock.get_requests()) == 1  # a malformed hit is not a confirmed miss
+
+
+async def test_lookup_selects_requested_identity_instead_of_first_row(httpx_mock: HTTPXMock) -> None:
+    rows = [
+        {"orderId": "foreign", "orderStatus": "Filled"},
+        {"orderId": "7", "symbol": "BTCUSDT", "orderStatus": "New"},
+    ]
+    httpx_mock.add_response(json={"retCode": 0, "result": {"list": rows}})
+    async with Bybit(api_key="k", secret="s", market_type="linear") as ex:
+        order = await ex.fetch_order("7", SYMBOL)
+    assert order.id == "7" and order.status == "New" and order.filled == 0

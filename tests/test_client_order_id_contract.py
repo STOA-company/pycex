@@ -53,7 +53,11 @@ def order_payload(cls, *, ack=False):
         )
         return {"code": "00000", "msg": "success", "data": row}
     if cls is Bybit:
-        row = {"orderId": "42", "orderLinkId": CID} if ack else {"orderId": "42", "orderLinkId": CID, "qty": "2"}
+        row = (
+            {"orderId": "42", "orderLinkId": CID}
+            if ack
+            else {"orderId": "42", "orderLinkId": CID, "symbol": "BTCUSDT", "qty": "2"}
+        )
         return {"retCode": 0, "result": row if ack else {"list": [row]}}
     row = (
         {"ordId": "42", "clOrdId": CID, "sCode": "0", "sMsg": ""}

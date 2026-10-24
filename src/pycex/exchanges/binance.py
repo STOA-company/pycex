@@ -385,7 +385,14 @@ class Binance(BaseExchange):
         async with self._rate_limiter.request("query", weight=1 if self.market_type == "linear" else 4):
             params = self._signed_params({"symbol": native, **lookup})
             data = await self._http.get(self._p("order"), params=params, headers=self._auth_headers())
-        return _parse_order(symbol, _check_order_response(data))
+        row = _check_order_response(data)
+        key, expected = ("clientOrderId", client_order_id) if client_order_id else ("orderId", order_id)
+        if row.get("symbol") != native:
+            raise ExchangeError("binance: order lookup symbol is missing or different", exchange="binance")
+        identity = row.get(key)
+        if identity in (None, "") or str(identity) != str(expected):
+            raise ExchangeError("binance: order lookup identifier is missing or different", exchange="binance")
+        return _parse_order(symbol, row)
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         p: dict[str, Any] = {}

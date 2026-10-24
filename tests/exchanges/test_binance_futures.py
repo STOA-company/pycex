@@ -134,14 +134,12 @@ async def test_leverage_unknown_or_mismatched_ack_rejected(httpx_mock: HTTPXMock
             await ex.set_leverage(SYMBOL, 3)
 
 
-@pytest.mark.parametrize("action", ["create", "fetch", "cancel"])
+@pytest.mark.parametrize("action", ["create", "cancel"])
 async def test_empty_order_ack_is_unknown(httpx_mock: HTTPXMock, action: str) -> None:
     httpx_mock.add_response(json={"orderId": None, "status": None})
     async with Binance(api_key="k", secret="s", market_type="linear") as ex:
         if action == "create":
             order = await ex.create_order(SYMBOL, "sell", "market", 0.01, reduce_only=True)
-        elif action == "fetch":
-            order = await ex.fetch_order(None, SYMBOL, client_order_id="w6-close")
         else:
             order = await ex.cancel_order("7", SYMBOL)
     assert order.id == "" and order.status == "" and order.filled == 0
@@ -178,7 +176,9 @@ async def test_leverage_failure_after_mode_success_is_visible(httpx_mock: HTTPXM
 
 async def test_lost_response_reconcile_same_client_id_without_recreate(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_exception(httpx.ReadTimeout("synthetic lost response"))
-    httpx_mock.add_response(json={"orderId": 7, "clientOrderId": "w6-close", "status": "NEW", "origQty": "0.01"})
+    httpx_mock.add_response(
+        json={"orderId": 7, "clientOrderId": "w6-close", "symbol": "BTCUSDT", "status": "NEW", "origQty": "0.01"}
+    )
     async with Binance(api_key="k", secret="s", market_type="linear") as ex:
         with pytest.raises(NetworkError):
             await ex.create_order(SYMBOL, "sell", "market", 0.01, reduce_only=True, client_order_id="w6-close")
@@ -196,3 +196,24 @@ def test_sync_futures_order_and_leverage(httpx_mock: HTTPXMock) -> None:
     assert ex.set_leverage_sync(SYMBOL, 3)["leverage"] == 3
     assert ex.create_order_sync(SYMBOL, "sell", "market", 0.01, reduce_only=True).status == ""
     assert len(httpx_mock.get_requests()) == 2
+
+
+@pytest.mark.parametrize(
+    "lookup,row",
+    [
+        ({"order_id": "7"}, {"orderId": 99, "symbol": "BTCUSDT"}),
+        (
+            {"order_id": None, "client_order_id": "w6-close"},
+            {"orderId": 7, "clientOrderId": "foreign", "symbol": "BTCUSDT"},
+        ),
+        ({"order_id": "7"}, {"orderId": 7, "symbol": "ETHUSDT"}),
+        ({"order_id": None, "client_order_id": "w6-close"}, {"orderId": 7, "symbol": "BTCUSDT"}),
+        ({"order_id": "7"}, {"orderId": 7}),
+    ],
+)
+async def test_lookup_rejects_foreign_or_unconfirmed_identity(httpx_mock: HTTPXMock, lookup: dict, row: dict) -> None:
+    httpx_mock.add_response(json={**row, "status": "FILLED", "executedQty": "1"})
+    async with Binance(api_key="k", secret="s", market_type="linear") as ex:
+        with pytest.raises(ExchangeError, match="lookup"):
+            await ex.fetch_order(symbol=SYMBOL, **lookup)
+    assert len(httpx_mock.get_requests()) == 1

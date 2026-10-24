@@ -488,7 +488,13 @@ class Bybit(BaseExchange):
             if not isinstance(rows, list):
                 raise ExchangeError("bybit: incomplete order lookup; reconcile again", exchange="bybit")
             if rows:
-                return _parse_order(symbol, rows[0])
+                key, expected = ("orderLinkId", client_order_id) if client_order_id else ("orderId", order_id)
+                if any(not isinstance(row, dict) for row in rows):
+                    raise ExchangeError("bybit: incomplete order lookup rows", exchange="bybit")
+                matches = [row for row in rows if str(row.get(key) or "") == str(expected)]
+                if len(matches) != 1 or matches[0].get("symbol") != native:
+                    raise ExchangeError("bybit: order lookup identity does not match the request", exchange="bybit")
+                return _parse_order(symbol, matches[0])
         raise OrderNotFoundError("bybit: order not found", exchange="bybit")
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
