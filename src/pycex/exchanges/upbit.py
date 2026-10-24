@@ -222,7 +222,8 @@ class Upbit(KrwV1Mixin, BaseExchange):
         params = {"identifier": client_order_id} if client_order_id else {"uuid": order_id}
         async with self._rate_limiter.request("query", group="query30"):
             data = self._check(await self._http.get("/v1/order", params=params, headers=self._headers(params)))
-        return _parse_upbit_order(symbol, data)
+        # Unlike a sparse create/cancel ACK, a lookup must identify its own market.
+        return _parse_upbit_order("", data)
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         params: dict[str, Any] = {"state": "wait"}

@@ -78,6 +78,12 @@ class TestOrder:
         assert o.id == "123"
         assert o.price == 50000.0
         assert o.filled == 0.0
+        assert o.average_price is None
+
+    def test_execution_average_is_separate_from_limit_price(self) -> None:
+        o = Order(id="123", symbol="BTC/KRW", side="buy", type="limit", amount=2, price=5000, average_price=4900)
+        assert o.price == 5000 and o.average_price == 4900
+        assert Order.model_validate(o.model_dump()).average_price == 4900
 
 
 class TestTrade:
