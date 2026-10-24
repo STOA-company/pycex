@@ -10,7 +10,7 @@
 - Private UTA paths: assets, positions, place, cancel, order-info, unfilled-orders and fills all use `/api/v3`.
 - Public market data stays on account-independent v2 endpoints.
 - UTA `category` is `SPOT` or `USDT-FUTURES`; order quantity is `qty`, limit time-in-force is `timeInForce`.
-- Spot market-buy `amount` remains quote currency; spot limit/sell and linear futures use base quantity.
+- Spot market-buy `amount` remains quote currency (query field `amount`); other orders use base `qty`; fills stay base.
 - `create_order(..., margin_mode="crossed"|"isolated", reduce_only=False, pos_side=None, time_in_force="gtc")`.
 - `cross` aliases `crossed`. The omitted defaults preserve classic order payloads. Futures options reject spot use.
 - Classic reduce-only is `YES`; UTA is `yes`. UTA `pos_side="long"|"short"` is explicit for hedge positions.
@@ -23,16 +23,16 @@
 - UTA sandbox uses `paptrading: 1`, ordinary symbols and ordinary category; classic simulated futures remain unchanged.
 - `fetch_order(None, symbol, client_order_id=key)` maps `qty`, `cumExecQty`, `orderStatus`, `createdTime`.
 - Lookups reject mismatched order/client keys, symbols or categories. Empty/malformed envelopes do not mean success.
-- Create/cancel acknowledgements establish no terminal status. Do not treat an ACK as a fill or completed cancellation.
+- Create/cancel ACKs establish no terminal status; null create `orderId` becomes `""`, preserving `clientOid` for lookup.
 - No POST retries/fallback after 40085, timeout or service errors. Query the same `clientOid` for ambiguous results.
-- Fills use v3 `execId/execPrice/execQty`; since v3 has no symbol filter, the fetched page is filtered locally.
+- UTA reads follow cursors (100/page max): open orders exhaust; fills apply symbol filter then positive output `limit`.
+- Repeated/invalid cursors and malformed/error pages raise; no partial result or page-count cap. `since` stays on every page.
 - Balance maps nested `assets`; positions map `posSide/total/avgPrice/unrealisedPnl`; native status/raw data are preserved.
 - Source: https://www.bitget.com/docs/classic/uta-api-upgrade-guide
 - Orders: https://www.bitget.com/legacy-docs/uta/trade/Place-Order
 - Lookup/cancel: https://www.bitget.com/legacy-docs/uta/trade/Get-Order-Details ; https://www.bitget.com/legacy-docs/uta/trade/Cancel-Order
 - Open/fills: https://www.bitget.com/legacy-docs/uta/trade/Get-Order-Pending ; https://www.bitget.com/legacy-docs/uta/trade/Get-Order-Fills
 - Account/detection: https://www.bitget.com/legacy-docs/uta/account/Get-Account ; https://www.bitget.com/legacy-docs/uta/account/Get-Account-Setting
-- Guide: https://www.bitget.com/docs/uta/best-practices-guide
 - Leverage/positions: https://www.bitget.com/legacy-docs/uta/account/Change-Leverage ; https://www.bitget.com/legacy-docs/uta/trade/Get-Position
 - Classic margin: https://www.bitget.com/docs/catalog/classic-contract-account/classic-contract-account
 - Demo: https://www.bitget.com/legacy-docs/uta/guide

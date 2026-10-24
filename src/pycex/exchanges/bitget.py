@@ -308,6 +308,31 @@ class Bitget(BaseExchange):
             raise ExchangeError("bitget: incomplete UTA list response", exchange=self.name)
         return rows
 
+    async def _uta_paginated_rows(
+        self, name: str, params: dict[str, Any], *, native: str | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Exhaust UTA cursors or collect ``limit`` matching rows; never return a partial scan on error."""
+        params = {**params, "limit": str(min(limit, 100) if limit is not None else 100)}
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        while True:
+            path = self._path(self._p(name), params)
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get(path, headers=self._signed_get(path))
+            rows = self._uta_list(data)
+            cursor = self._uta_data(data).get("cursor")
+            if cursor is not None and not isinstance(cursor, str):
+                raise ExchangeError("bitget: invalid UTA pagination cursor", exchange=self.name)
+            if cursor and cursor in seen:
+                raise ExchangeError("bitget: repeated UTA pagination cursor", exchange=self.name)
+            result.extend(row for row in rows if native is None or row.get("symbol") == native)
+            if limit is not None and len(result) >= limit:
+                return result[:limit]
+            if not rows or not cursor:
+                return result
+            seen.add(cursor)
+            params["cursor"] = cursor
+
     def to_native(self, symbol: str) -> str:
         sym = parse_symbol(symbol)
         if self.market_type == "linear":
@@ -661,7 +686,7 @@ class Bitget(BaseExchange):
         r = self._check(data)
         first = self._uta_data(data) if self.account_type == "uta" else (r[0] if r else {})
         return Order(
-            id=first.get("orderId", ""),
+            id=first.get("orderId") or "",
             client_order_id=first.get("clientOid") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
@@ -724,10 +749,8 @@ class Bitget(BaseExchange):
             params: dict[str, Any] = {"category": self._category}
             if native:
                 params["symbol"] = native
-            path = self._path(self._p("openOrders"), params)
-            async with self._rate_limiter.request("query"):
-                data = await self._http.get(path, headers=self._signed_get(path))
-            return [_parse_order_uta(self.from_native(o["symbol"]), o) for o in self._uta_list(data)]
+            rows = await self._uta_paginated_rows("openOrders", params)
+            return [_parse_order_uta(self.from_native(o["symbol"]), o) for o in rows]
         if self.market_type == "linear":
             params = self._mix_params({"symbol": native} if native else None)
             path = self._path(self._p("openOrders"), params)
@@ -747,16 +770,14 @@ class Bitget(BaseExchange):
             raise ValueError(f"bitget:{self.market_type} requires symbol for my trades")
         native = self.to_native(symbol)
         if self.account_type == "uta":
-            # v3 fills has no symbol query parameter: filter the page locally.
+            # v3 fills has no symbol query parameter: limit applies after filtering across pages.
+            if limit is not None and limit <= 0:
+                raise ValueError("bitget: UTA trade limit must be positive")
             params: dict[str, Any] = {"category": self._category}
             if since is not None:
                 params["startTime"] = str(since)
-            if limit is not None:
-                params["limit"] = str(limit)
-            path = self._path(self._p("fills"), params)
-            async with self._rate_limiter.request("query"):
-                data = await self._http.get(path, headers=self._signed_get(path))
-            return [_parse_my_trade_uta(symbol, t) for t in self._uta_list(data) if t["symbol"] == native]
+            rows = await self._uta_paginated_rows("fills", params, native=native, limit=limit)
+            return [_parse_my_trade_uta(symbol, t) for t in rows]
         if self.market_type == "linear":
             params = self._mix_params({"symbol": native})
             if since is not None:
@@ -803,13 +824,16 @@ def _uta_number(value: Any, field: str) -> float:
 
 def _parse_order_uta(symbol: str, d: dict[str, Any]) -> Order:
     # Spot market buys report quote amount separately; qty is base quantity.
+    amount_field = (
+        "amount" if d.get("category") == "SPOT" and d.get("side") == "buy" and d.get("orderType") == "market" else "qty"
+    )
     return Order(
         id=str(d.get("orderId", "")),
         client_order_id=d.get("clientOid") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("orderType", "").lower(),
-        amount=_uta_number(d.get("qty"), "qty"),
+        amount=_uta_number(d.get(amount_field), amount_field),
         price=_none_if_zero(d.get("price")),
         filled=_uta_number(d.get("cumExecQty"), "cumExecQty"),
         status=d.get("orderStatus", ""),

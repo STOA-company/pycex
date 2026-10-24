@@ -162,7 +162,7 @@ async def test_uta_open_orders_uses_list_wrapper(httpx_mock: HTTPXMock) -> None:
         orders = await ex.fetch_open_orders(SYMBOL)
     req = httpx_mock.get_request()
     assert req.url.path == "/api/v3/trade/unfilled-orders"
-    assert dict(req.url.params) == {"category": "USDT-FUTURES", "symbol": "BTCUSDT"}
+    assert dict(req.url.params) == {"category": "USDT-FUTURES", "symbol": "BTCUSDT", "limit": "100"}
     assert len(orders) == 1 and orders[0].filled == 0.05
     _assert_valid_signature(req)
 
@@ -418,3 +418,133 @@ async def test_invalid_order_numbers_reject_before_write(amount: float, price: f
     async with Bitget(account_type="uta", market_type="linear") as ex:
         with pytest.raises(InvalidOrderError):
             await ex.create_order(SYMBOL, "sell", "limit", amount, price)
+
+
+@pytest.mark.parametrize("echo_key", [True, False])
+async def test_uta_null_order_ack_keeps_key_for_lookup_without_replay(httpx_mock: HTTPXMock, echo_key: bool) -> None:
+    ack = {"orderId": None, **({"clientOid": "w6-fixture"} if echo_key else {})}
+    httpx_mock.add_response(json=success(ack))
+    httpx_mock.add_response(json=success(order_row()))
+    async with Bitget(account_type="uta", market_type="linear") as ex:
+        order = await ex.create_order(SYMBOL, "sell", "market", 0.2, reduce_only=True, client_order_id="w6-fixture")
+        assert order.id == "" and order.client_order_id == "w6-fixture"
+        assert order.status == "" and order.filled == 0
+        assert order.raw == success(ack)
+        reconciled = await ex.fetch_order(None, SYMBOL, client_order_id=order.client_order_id)
+    requests = httpx_mock.get_requests()
+    assert [r.method for r in requests] == ["POST", "GET"]
+    assert requests[1].url.params["clientOid"] == "w6-fixture"
+    assert reconciled.id == "order-fixture" and reconciled.status == "partially_filled"
+
+
+@pytest.mark.parametrize(
+    "category,side,order_type,expected",
+    [
+        ("SPOT", "buy", "market", 100),
+        ("SPOT", "sell", "market", 0.2),
+        ("SPOT", "buy", "limit", 0.2),
+        ("USDT-FUTURES", "buy", "market", 0.2),
+    ],
+)
+async def test_uta_lookup_preserves_quote_market_buy_and_base_other_units(
+    httpx_mock: HTTPXMock, category: str, side: str, order_type: str, expected: float
+) -> None:
+    row = order_row(
+        category=category,
+        side=side,
+        orderType=order_type,
+        qty="0" if expected == 100 else "0.2",
+        amount="100",
+        cumExecQty="0.0372",
+    )
+    httpx_mock.add_response(json=success(row))
+    symbol = "BTC/USDT" if category == "SPOT" else SYMBOL
+    async with Bitget(account_type="uta", market_type="spot" if category == "SPOT" else "linear") as ex:
+        order = await ex.fetch_order("order-fixture", symbol)
+    assert order.amount == expected and order.filled == 0.0372
+
+
+async def test_uta_open_orders_exhausts_cursor_and_signs_each_page(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=success({"list": [order_row()], "cursor": "page-two"}))
+    httpx_mock.add_response(json=success({"list": [order_row(orderId="second-order")], "cursor": ""}))
+    async with Bitget(account_type="uta", market_type="linear", secret="s") as ex:
+        orders = await ex.fetch_open_orders(SYMBOL)
+    assert [o.id for o in orders] == ["order-fixture", "second-order"]
+    first, second = httpx_mock.get_requests()
+    assert dict(first.url.params) == {"category": "USDT-FUTURES", "symbol": "BTCUSDT", "limit": "100"}
+    assert dict(second.url.params) == {**dict(first.url.params), "cursor": "page-two"}
+    for request in (first, second):
+        _assert_valid_signature(request)
+
+
+def fill_row(**changes: object) -> dict:
+    return {
+        "execId": "fill-fixture",
+        "orderId": "order-fixture",
+        "symbol": "BTCUSDT",
+        "side": "sell",
+        "execPrice": "59999",
+        "execQty": "0.05",
+        "createdTime": "1234",
+        **changes,
+    }
+
+
+@pytest.mark.parametrize("limit", [None, 1, 101])
+async def test_uta_fill_pagination_filters_before_matching_output_limit(
+    httpx_mock: HTTPXMock, limit: int | None
+) -> None:
+    httpx_mock.add_response(json=success({"list": [fill_row(symbol="ETHUSDT")], "cursor": "page-two"}))
+    count = 2 if limit is None or limit == 1 else 100
+    httpx_mock.add_response(
+        json=success({"list": [fill_row(execId=f"match-{i}") for i in range(count)], "cursor": "page-three"})
+    )
+    if limit != 1:
+        httpx_mock.add_response(json=success({"list": [fill_row(execId="last-fill")], "cursor": ""}))
+    async with Bitget(account_type="uta", market_type="linear", secret="s") as ex:
+        fills = await ex.fetch_my_trades(SYMBOL, since=1000, limit=limit)
+    assert len(fills) == (3 if limit is None else limit)
+    assert len({f.id for f in fills}) == len(fills)  # Distinct fills of the same order survive.
+    requests = httpx_mock.get_requests()
+    assert len(requests) == (2 if limit == 1 else 3)
+    for i, request in enumerate(requests):
+        assert request.url.params["category"] == "USDT-FUTURES"
+        assert request.url.params["startTime"] == "1000"
+        assert request.url.params["limit"] == str(min(limit, 100) if limit is not None else 100)
+        assert "symbol" not in request.url.params
+        assert request.url.params.get("cursor") == (None if i == 0 else ("page-two" if i == 1 else "page-three"))
+        _assert_valid_signature(request)
+
+
+@pytest.mark.parametrize("name", ["open", "fills"])
+@pytest.mark.parametrize(
+    "second_page,reason",
+    [
+        (success({"list": [order_row()], "cursor": "same-cursor"}), "repeated"),
+        (success({"list": [order_row()], "cursor": 42}), "invalid"),
+        (success({"list": None, "cursor": ""}), "incomplete"),
+        ({"code": "45001", "msg": "synthetic page failure", "data": None}, "synthetic page failure"),
+    ],
+)
+async def test_uta_pagination_failure_never_returns_partial_results(
+    httpx_mock: HTTPXMock, name: str, second_page: dict, reason: str
+) -> None:
+    httpx_mock.add_response(
+        json=success({"list": [order_row() if name == "open" else fill_row()], "cursor": "same-cursor"})
+    )
+    httpx_mock.add_response(json=second_page)
+    async with Bitget(account_type="uta", market_type="linear") as ex:
+        with pytest.raises(ExchangeError, match=reason):
+            if name == "open":
+                await ex.fetch_open_orders(SYMBOL)
+            else:
+                await ex.fetch_my_trades(SYMBOL)
+    assert len(httpx_mock.get_requests()) == 2
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_uta_nonpositive_fill_limit_rejects_before_get(httpx_mock: HTTPXMock, limit: int) -> None:
+    async with Bitget(account_type="uta") as ex:
+        with pytest.raises(ValueError, match="limit must be positive"):
+            await ex.fetch_my_trades("BTC/USDT", limit=limit)
+    assert httpx_mock.get_requests() == []
