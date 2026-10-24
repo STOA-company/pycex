@@ -1,6 +1,6 @@
 # W6 KRW order reconciliation (2026-10-24)
 
-- Baseline: trader pycex pin `10f9910c8`.
+- Baseline: trader pycex pin `10f9910c`.
 - Reuses the KRW parser/cancellation delta and regression cases from pycex PR #28 (`2dc67e3`); no unrelated venue code.
 - Interface remains `fetch_order(None, symbol, client_order_id=key)`; exactly one lookup key is required.
 - Create uses the same optional `client_order_id` as before; the SDK never invents or retries an order key.
