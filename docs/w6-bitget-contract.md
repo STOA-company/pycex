@@ -1,5 +1,5 @@
 # W6 Bitget private contract (2026-10-24)
-- Base: trader-pinned pycex `10f9910c8`.
+- Base: trader-pinned pycex `10f9910c`.
 - Customer outcome: UTA spot/futures orders and reconciliation use v3; classic futures can select isolated margin.
 - `Bitget(..., account_type="classic")` remains the compatible default. Pass `account_type="uta"` for UTA.
 - W5 must select the account type before its first write, including balance/position checks before an order.
