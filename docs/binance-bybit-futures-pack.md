@@ -1,0 +1,40 @@
+# W6 Binance / Bybit futures contracts (2026-10-24)
+- Scope: additive SDK support at `10f9910c`; synthetic HTTP tests only, no keys, live requests, orders, deployment or account changes.
+- Owners: `src/pycex/exchanges/binance.py`, `bybit.py`; regression files `tests/exchanges/test_{binance,bybit}_futures.py`.
+- Existing PR #6 was inspected; its reduce-only wire option was reused conceptually, with no shared models/base changes or cherry-pick.
+- Both adapters: `create_order(..., *, client_order_id=None, reduce_only=False)`; true is derivatives-only; non-bool is rejected before HTTP.
+- Binance: `market_type='linear'`; signed `POST /fapi/v1/order`, `reduceOnly='true'`, `newClientOrderId`; default omits reduceOnly.
+- Binance retains its one-way account assumption; hedge accounts require a different positionSide contract and venue errors propagate.
+- Binance: `set_leverage(symbol, lever, mgn_mode=None)` sends signed `POST /fapi/v1/leverage`; finite integer >=1, no silent cap/rounding.
+- Leverage-only default preserves the existing margin mode. Explicit `cross`/`isolated` first calls `set_margin_mode(symbol, mode)`.
+- Binance margin endpoint `/fapi/v1/marginType` maps cross to CROSSED and isolated to ISOLATED; -4046 is unchanged, other errors propagate.
+- A Binance margin change may succeed before leverage fails; the call is not atomic, and no automatic rollback/retry is attempted.
+- Binance leverage return is the actual response with matching symbol/leverage; missing or mismatched acknowledgements raise ExchangeError.
+- Binance maximum leverage is symbol/risk-tier specific; no bracket/max provider is added. W5 must supply that policy/read path separately.
+- Binance futures insufficient funds -2018/-2019 map to InsufficientBalanceError; reduce-only/hedge errors retain native codes.
+- Bybit: `market_type='linear'`, V5 JSON `category='linear'`, `reduceOnly=true`, `orderLinkId`; optional `position_idx=0|1|2` forwards positionIdx.
+- Bybit positionIdx 0 is one-way, 1 hedge Buy position, 2 hedge Sell position; this describes the position being reduced, not order side.
+- Bybit: `set_leverage(symbol, lever, mgn_mode=None)` sends equal buyLeverage/sellLeverage via `/v5/position/set-leverage` without rounding.
+- Returns the native envelope: retCode 0 acknowledgement or 110043 unchanged acknowledgement; neither fabricates a numeric settings snapshot.
+- W5 seam: its current three-argument set_leverage(symbol, value, mode) must omit mode for Bybit. Passing mode raises NotSupportedError.
+- Bybit UTA margin mode is account-wide: use explicit `set_margin_mode('cross'|'isolated'|'portfolio')`; never called implicitly by an order/setter.
+- Bybit margin acknowledgement requires retCode 0 and empty result.reasons; failures/missing confirmation raise ExchangeError.
+- Bybit `fetch_account_config()` reads `/v5/account/info`; `fetch_leverage(symbol, 'isolated')` reads `/v5/position/symbol-info`, including flat symbols.
+- Bybit `fetch_positions(symbols=None)` reads paginated `/v5/position/list` with settleCoin=USDT, or queries the explicitly selected symbols.
+- Position amount remains positive; direction comes from side Buy/Sell. Empty leverage/liqPrice stay None; deprecated tradeMode never infers margin_mode.
+- Symbol-less Bybit open-order lookup supplies settleCoin=USDT; private lists exhaust nextPageCursor without a page-count cap, rejecting repeated/cyclic cursors instead of returning a partial snapshot (401 single-symbol / 1001 multi-symbol regression).
+- Bybit create/cancel ACKs retain status='' and filled=0; only a later query's native orderStatus supplies terminal/partial state.
+- Empty/missing envelopes or lookup lists raise ExchangeError, not OrderNotFoundError. A confirmed empty realtime+history lookup still raises OrderNotFoundError.
+- After a lost response: retain the same client ID and query, never blindly recreate. Timeout/unknown is not proof of rejection or completion.
+- Existing positional arguments/client-ID reconciliation stay intact. New methods set_margin_mode are async-only; existing setters/query/order sync twins work.
+- Tests independently check real outgoing HMACs, exact V5 JSON and fapi params, partial fill, rejected settings, ACK unknown, lost-response reconciliation and sync.
+- Customer path / testnet / actual account setting / actual order execution: **안 걸어 봄** (outside this authorization).
+- Official Binance order: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order
+- Official Binance leverage/margin: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Change-Initial-Leverage and https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Change-Margin-Type
+- Official Binance errors: https://developers.binance.com/docs/derivatives/usds-margined-futures/error-code
+- Official Bybit order/cancel: https://bybit-exchange.github.io/docs/v5/order/create-order and https://bybit-exchange.github.io/docs/v5/order/cancel-order
+- Official Bybit lookup: https://bybit-exchange.github.io/docs/v5/order/open-order and https://bybit-exchange.github.io/docs/v5/order/order-list
+- Official Bybit position/leverage: https://bybit-exchange.github.io/docs/v5/position and https://bybit-exchange.github.io/docs/v5/position/leverage
+- Official Bybit settings: https://bybit-exchange.github.io/docs/v5/account/set-margin-mode and https://bybit-exchange.github.io/docs/v5/position/batch-lvg
+- Official Bybit config/errors: https://bybit-exchange.github.io/docs/v5/account/account-info and https://bybit-exchange.github.io/docs/v5/error
+- Single-order lookup requires the requested order/client ID and native symbol; a missing/foreign/ambiguous identity raises ExchangeError rather than becoming the customer's fill. Bybit selects one matching row, never blindly the first.
