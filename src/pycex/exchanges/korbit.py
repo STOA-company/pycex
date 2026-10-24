@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlencode
 
@@ -306,17 +307,22 @@ class Korbit(BaseExchange):
             path = self._signed_query_path("/v2/orders", {"symbol": native, "orderId": order_id})
             data = await self._http.delete(path, headers=self._headers())
         # `{"success": true}` only — no order fields to parse; side/type stay unguessed.
-        return Order(id=str(order_id), symbol=symbol, side="", type="", amount=0.0, raw=_unwrap(data) or {})
+        return Order(
+            id=str(order_id), symbol=symbol, side="", type="", amount=0.0, status="unknown", raw=_unwrap(data) or {}
+        )
 
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
             raise InvalidOrderError("Provide exactly one of order_id or client_order_id", exchange="korbit")
+        if client_order_id and not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
+            raise InvalidOrderError("client_order_id must match [0-9a-zA-Z.:_-]{1,36}", exchange="korbit")
         native = self.to_native(symbol)
         key = {"clientOrderId": client_order_id} if client_order_id else {"orderId": order_id}
         async with self._rate_limiter.request("query"):
             path = self._signed_query_path("/v2/orders", {"symbol": native, **key})
             data = await self._http.get(path, headers=self._headers())
-        return _parse_order(symbol, _unwrap(data))
+        # Open-order lists omit symbol, but this single-order response requires it.
+        return _parse_order("", _unwrap(data))
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         if symbol is None:
@@ -467,6 +473,22 @@ def _parse_public_trade(symbol: str, d: dict[str, Any]) -> Trade:
     )
 
 
+def _execution_average(d: dict[str, Any]) -> float | None:
+    """Use official execution fields, never the submitted limit price."""
+    try:
+        filled = Decimal(str(d.get("filledQty")))
+        if not filled.is_finite() or filled <= 0:
+            return None
+        value = d.get("avgPrice")
+        average = Decimal(str(value)) if value is not None else Decimal(str(d.get("filledAmt"))) / filled
+        if not average.is_finite() or average <= 0:
+            return None
+        result = float(average)
+        return result if 0 < result < float("inf") else None
+    except (InvalidOperation, TypeError, ValueError, OverflowError):
+        return None
+
+
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     # A market-buy order carries `amt` (quote-currency total spent), not `qty` —
     # `GET /v2/orders` response fields (docs.korbit.co.kr/llms/en/rest_api/trading.md).
@@ -477,6 +499,23 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     amt = d.get("amt")
     amount = float(qty) if qty else float(amt or 0)
     price = d.get("price")
+    native = d.get("symbol")
+    if isinstance(native, str) and native.count("_") == 1:
+        base, quote = native.split("_")
+        symbol = f"{base.upper()}/{quote.upper()}" if base and quote else ""
+    elif "symbol" in d:
+        symbol = ""
+    state = d.get("status", "")
+    if state not in (
+        "pending",
+        "open",
+        "filled",
+        "canceled",
+        "partiallyFilled",
+        "partiallyFilledCanceled",
+        "expired",
+    ):
+        state = "unknown"
     return Order(
         id=str(d.get("orderId", "")),
         client_order_id=d.get("clientOrderId") or None,
@@ -486,7 +525,8 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
         amount=amount,
         price=float(price) if price not in (None, "") else None,
         filled=float(d.get("filledQty", 0) or 0),
-        status=str(d.get("status", "")),
+        average_price=_execution_average(d),
+        status=state,
         timestamp=int(d.get("createdAt", 0) or 0),
         raw=d,
     )

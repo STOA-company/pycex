@@ -493,3 +493,67 @@ async def test_open_orders_and_cancel_echo_identifier(httpx_mock: HTTPXMock) -> 
     assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
     assert (await ex.cancel_order("order-uuid-1", "BTC/KRW")).client_order_id == CID
     await ex.close()
+
+
+# Official GET /v1/order example, accessed 2026-10-04 UTC; CONTRACTS.md sources.
+_OFFICIAL_FILL_1004 = {
+    "market": "KRW-USDT",
+    "uuid": "3b67e543-8ad3-48d0-8451-0dad315cae73",
+    "side": "ask",
+    "ord_type": "market",
+    "state": "done",
+    "created_at": "2025-08-09T16:44:00+09:00",
+    "volume": "5.377594",
+    "remaining_volume": "0",
+    "executed_volume": "5.377594",
+    "reserved_fee": "0",
+    "remaining_fee": "0",
+    "paid_fee": "3.697095875",
+    "locked": "0",
+    "prevented_volume": "0",
+    "prevented_locked": "0",
+    "trades_count": 1,
+    "trades": [
+        {
+            "market": "KRW-USDT",
+            "uuid": "795dff29-bba6-49b2-baab-63473ab7931c",
+            "price": "1375",
+            "volume": "5.377594",
+            "funds": "7394.19175",
+            "trend": "down",
+            "created_at": "2025-08-09T16:44:00.597751+09:00",
+            "side": "ask",
+        }
+    ],
+}
+
+
+def test_official_fill_average_uses_execution_funds_not_limit_price_1004():
+    from pycex.exchanges.upbit import _parse_upbit_order
+
+    raw = dict(_OFFICIAL_FILL_1004)
+    order = _parse_upbit_order("USDT/KRW", raw)
+    assert order.raw == raw
+    assert order.filled == float(raw["executed_volume"])
+    assert order.average_price == 1375.0
+    raw["ord_type"] = "limit"
+    raw["price"] = "999999999"
+    assert _parse_upbit_order(order.symbol, raw).average_price == order.average_price
+
+
+def test_unknown_status_and_response_market_identity_1004():
+    from pycex.exchanges.upbit import _parse_upbit_order
+
+    raw = {**_OFFICIAL_FILL_1004, "state": "new_undocumented_state", "market": "KRW-ETH"}
+    order = _parse_upbit_order("BTC/KRW", raw)
+    assert order.status == "unknown"
+    assert order.symbol == "ETH/KRW"
+
+
+def test_missing_or_incomplete_execution_data_has_no_average_1004():
+    from pycex.exchanges.upbit import _parse_upbit_order
+
+    raw = {**_OFFICIAL_FILL_1004, "executed_volume": "0", "price": "999999999"}
+    assert _parse_upbit_order("BTC/KRW", raw).average_price is None
+    raw.pop("executed_volume")
+    assert _parse_upbit_order("BTC/KRW", raw).average_price is None
