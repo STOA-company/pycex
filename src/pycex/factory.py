@@ -36,14 +36,18 @@ def create_exchange(
     passphrase: str = "",
     sandbox: bool = False,
     market_type: MarketType = "spot",
+    auth_type: str = "hmac",
+    account_seq: int = 1,
 ) -> BaseExchange:
-    """Construct one of the seven supported exchange adapters by name.
+    """Construct one of the supported exchange adapters by name.
 
     Any credential left empty (``""``) is filled in from the environment as
     ``PYCEX_{NAME}_API_KEY`` / ``PYCEX_{NAME}_SECRET`` / ``PYCEX_{NAME}_PASSPHRASE``
     (``{NAME}`` upper-cased, e.g. ``PYCEX_BYBIT_API_KEY``). ``passphrase`` is
     only forwarded to OKX and Bitget — the only two adapters whose
     constructor accepts it; every other exchange silently ignores it.
+
+    ``auth_type`` and ``account_seq`` are forwarded only to Digital X.
 
     Raises ``ValueError`` for an unrecognized ``name``, listing the valid
     names in the message.
@@ -70,7 +74,14 @@ def create_exchange(
     if key == "bithumb":
         return Bithumb(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
     if key == "digitalx":
-        return DigitalX(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
+        return DigitalX(
+            api_key=api_key,
+            secret=secret,
+            sandbox=sandbox,
+            market_type=market_type,
+            auth_type=auth_type,
+            account_seq=account_seq,
+        )
     if key == "korbit":
         return Korbit(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
     raise AssertionError(f"unreachable: {key!r} is in EXCHANGES but has no constructor branch")

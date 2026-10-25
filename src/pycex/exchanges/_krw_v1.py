@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from pycex.constants import TIMEFRAME_MS
@@ -341,12 +342,18 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     price_raw = d.get("price")
     price = float(price_raw) if price_raw not in (None, "") and ord_type == "limit" else None
     volume_raw = d.get("volume")
-    if volume_raw not in (None, ""):
-        amount = float(volume_raw)
-    elif price_raw not in (None, ""):
-        amount = float(price_raw)
-    else:
-        amount = 0.0
+    quote_buy = ord_type == "price"
+    amount = None if quote_buy else Decimal(str(volume_raw or "0"))
+    filled = Decimal(str(d.get("executed_volume") or "0"))
+    terminal = d.get("state") in {"done", "cancel"}
+    remaining_raw = d.get("remaining_volume")
+    remaining = Decimal(0) if terminal else (Decimal(str(remaining_raw)) if remaining_raw is not None else None)
+    # Only use reported executed funds; price is the requested budget for `price` orders.
+    funds = d.get("executed_funds")
+    if funds is None and d.get("trades"):
+        trades = d["trades"]
+        if all(t.get("funds") is not None for t in trades):
+            funds = sum((Decimal(str(t["funds"])) for t in trades), Decimal(0))
     created_at = d.get("created_at")
     side = {"bid": "buy", "ask": "sell"}.get(d.get("side", ""), "")
     order_type_out = "" if not ord_type else ("market" if ord_type in ("price", "market") else "limit")
@@ -355,9 +362,15 @@ def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
         symbol=symbol,
         side=side,
         type=order_type_out,
-        amount=amount,
+        amount=float(amount) if amount is not None else 0,
+        amount_exact=amount,
+        amount_quote=Decimal(str(price_raw)) if quote_buy and price_raw is not None else None,
+        cost=Decimal(str(funds)) if funds is not None else None,
+        remaining=float(remaining) if remaining is not None else None,
+        remaining_exact=remaining,
         price=price,
-        filled=float(d.get("executed_volume", 0) or 0),
+        filled=float(filled),
+        filled_exact=filled,
         status=d.get("state", ""),
         timestamp=_parse_iso_to_ms(created_at) if created_at else 0,
         raw=d,
