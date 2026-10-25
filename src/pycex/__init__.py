@@ -30,7 +30,7 @@ from pycex.exceptions import (
     SettlementPendingError,
     SymbolNotFoundError,
 )
-from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, Korbit, Upbit
+from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, DigitalX, Korbit, Upbit
 from pycex.factory import create_exchange
 from pycex.models import (
     Balance,
@@ -57,6 +57,7 @@ __all__ = [
     "Bitget",
     "Bithumb",
     "Bybit",
+    "DigitalX",
     "Korbit",
     "OKX",
     "Upbit",

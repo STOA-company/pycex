@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from pycex.base import BaseExchange
-from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, Korbit, Upbit
+from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, DigitalX, Korbit, Upbit
 from pycex.symbols import MarketType
 
 # Public registry: name -> concrete adapter class. Exposed for callers that
@@ -24,6 +24,7 @@ EXCHANGES: dict[str, type[BaseExchange]] = {
     "upbit": Upbit,
     "bithumb": Bithumb,
     "korbit": Korbit,
+    "digitalx": DigitalX,
 }
 
 
@@ -68,6 +69,8 @@ def create_exchange(
         return Upbit(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
     if key == "bithumb":
         return Bithumb(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
+    if key == "digitalx":
+        return DigitalX(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
     if key == "korbit":
         return Korbit(api_key=api_key, secret=secret, sandbox=sandbox, market_type=market_type)
     raise AssertionError(f"unreachable: {key!r} is in EXCHANGES but has no constructor branch")
