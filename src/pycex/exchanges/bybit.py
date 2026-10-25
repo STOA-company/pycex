@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
 
@@ -281,6 +282,7 @@ class Bybit(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        market_unit: str | None = None,
     ) -> Order:
         if client_order_id is not None:
             _validated_client_order_id(client_order_id)
@@ -292,6 +294,14 @@ class Bybit(BaseExchange):
             "orderType": "Limit" if order_type.lower() == "limit" else "Market",
             "qty": str(amount),
         }
+        # https://bybit-exchange.github.io/docs/v5/order/create-order
+        is_spot_market = self.market_type == "spot" and body["orderType"] == "Market"
+        if market_unit is not None and (not is_spot_market or market_unit not in ("baseCoin", "quoteCoin")):
+            raise InvalidOrderError(
+                "bybit: market_unit requires a spot market order and baseCoin/quoteCoin", exchange="bybit"
+            )
+        if is_spot_market:
+            body["marketUnit"] = market_unit or ("quoteCoin" if side.lower() == "buy" else "baseCoin")
         if price is not None:
             body["price"] = str(price)
             body["timeInForce"] = "GTC"
@@ -303,13 +313,16 @@ class Bybit(BaseExchange):
                 "/v5/order/create", body=body_str, headers=self._auth_post_headers(body_str)
             )
         result = self._check(data)
+        quote_amount = self.market_type == "spot" and body.get("marketUnit") == "quoteCoin"
         return Order(
             id=result.get("orderId", ""),
             client_order_id=result.get("orderLinkId") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
-            amount=amount,
+            amount=0.0 if quote_amount else amount,
+            amount_exact=None if quote_amount or self.market_type != "spot" else Decimal(str(amount)),
+            amount_quote=Decimal(str(amount)) if quote_amount else None,
             price=price,
             raw=data,
         )
@@ -344,7 +357,7 @@ class Bybit(BaseExchange):
                         raise
                     continue
             if result.get("list"):
-                return _parse_order(symbol, result["list"][0])
+                return _parse_order(symbol, result["list"][0], self.market_type)
         raise OrderNotFoundError("bybit: order not found", exchange="bybit")
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
@@ -355,7 +368,9 @@ class Bybit(BaseExchange):
             full_path, headers = self._signed_get_request("/v5/order/realtime", params)
             data = await self._http.get(full_path, headers=headers)
         result = self._check(data)
-        return [_parse_order(self.from_native(o.get("symbol", "")), o) for o in result.get("list", [])]
+        return [
+            _parse_order(self.from_native(o.get("symbol", "")), o, self.market_type) for o in result.get("list", [])
+        ]
 
     async def fetch_my_trades(
         self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
@@ -487,14 +502,39 @@ def _parse_balance(result: dict[str, Any], raw: dict[str, Any]) -> Balance:
     return Balance(assets=entries, raw=raw)
 
 
-def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
+def _parse_order(symbol: str, d: dict[str, Any], market_type: str = "spot") -> Order:
+    spot = market_type == "spot"
+    quote_amount = (
+        spot
+        and d.get("orderType", "").lower() == "market"
+        and (d.get("marketUnit") or ("quoteCoin" if d.get("side", "").lower() == "buy" else "baseCoin")) == "quoteCoin"
+    )
+    requested = Decimal(str(d.get("qty") or 0))
+    executed = Decimal(str(d.get("cumExecQty") or 0))
+    terminal = d.get("orderStatus", "").lower() in (
+        "filled",
+        "cancelled",
+        "partiallyfilledcanceled",
+        "rejected",
+        "deactivated",
+    )
+    remaining = (
+        (Decimal(0) if terminal else None if quote_amount else max(Decimal(0), requested - executed)) if spot else None
+    )
+    cost = Decimal(str(d["cumExecValue"])) if spot and d.get("cumExecValue") not in (None, "") else None
     return Order(
         id=d.get("orderId", ""),
         client_order_id=d.get("orderLinkId") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("orderType", "").lower(),
-        amount=float(d.get("qty", 0)),
+        amount=0.0 if quote_amount else float(requested),
+        amount_exact=requested if spot and not quote_amount else None,
+        amount_quote=requested if quote_amount else None,
+        filled_exact=executed if spot else None,
+        cost=cost,
+        remaining=float(remaining) if remaining is not None else None,
+        remaining_exact=remaining,
         price=float(d["price"]) if d.get("price") and float(d["price"]) > 0 else None,
         filled=float(d.get("cumExecQty", 0)),
         status=d.get("orderStatus", ""),
