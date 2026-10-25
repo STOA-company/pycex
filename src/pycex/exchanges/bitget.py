@@ -101,6 +101,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
 
@@ -494,13 +495,16 @@ class Bitget(BaseExchange):
             data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
         r = self._check(data)
         first = r[0] if r else {}
+        quote_amount = self.market_type == "spot" and body["orderType"] == "market" and side.lower() == "buy"
         return Order(
             id=first.get("orderId", ""),
             client_order_id=first.get("clientOid") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
-            amount=amount,
+            amount=0.0 if quote_amount else amount,
+            amount_exact=None if quote_amount or self.market_type != "spot" else Decimal(str(amount)),
+            amount_quote=Decimal(str(amount)) if quote_amount else None,
             price=price,
             raw=data,
         )
@@ -776,12 +780,27 @@ def _parse_my_trade_mix(symbol: str, t: dict[str, Any]) -> MyTrade:
 
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
     price = float(d.get("price", 0) or 0)
+    spot = True
+    quote_amount = spot and d.get("orderType", "").lower() == "market" and d.get("side", "").lower() == "buy"
+    requested = Decimal(str(d.get("size") or 0))
+    executed = Decimal(str(d.get("baseVolume") or 0))
+    terminal = d.get("status", "").lower() in ("filled", "cancelled")
+    remaining = (
+        (Decimal(0) if terminal else None if quote_amount else max(Decimal(0), requested - executed)) if spot else None
+    )
+    cost = Decimal(str(d["quoteVolume"])) if spot and d.get("quoteVolume") not in (None, "") else None
     return Order(
         id=str(d.get("orderId", "")),
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("orderType", "").lower(),
-        amount=float(d.get("size", 0) or 0),
+        amount=0.0 if quote_amount else float(requested),
+        amount_exact=requested if spot and not quote_amount else None,
+        amount_quote=requested if quote_amount else None,
+        filled_exact=executed if spot else None,
+        cost=cost,
+        remaining=float(remaining) if remaining is not None else None,
+        remaining_exact=remaining,
         price=price if price > 0 else None,
         filled=float(d.get("baseVolume", 0) or 0),
         status=d.get("status", ""),

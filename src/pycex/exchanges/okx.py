@@ -64,6 +64,7 @@ import json
 import math
 import re
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -573,13 +574,16 @@ class OKX(BaseExchange):
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._auth_headers("POST", path, body_str))
         r = _check_order_response(data)
+        quote_amount = is_spot_market and body["tgtCcy"] == "quote_ccy"
         return Order(
             id=r.get("ordId", ""),
             client_order_id=r.get("clOrdId") or client_order_id or None,
             symbol=symbol,
             side=side.lower(),
             type=order_type.lower(),
-            amount=amount,
+            amount=0.0 if quote_amount else amount,
+            amount_exact=None if quote_amount or self.market_type != "spot" else Decimal(str(amount)),
+            amount_quote=Decimal(str(amount)) if quote_amount else None,
             price=price,
             raw=data,
         )
@@ -617,7 +621,7 @@ class OKX(BaseExchange):
             )
         result = self._check(data)
         if result:
-            return _parse_order(symbol, result[0])
+            return _parse_order(symbol, result[0], self.market_type)
         return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
 
     async def fetch_open_orders(self, symbol: str | None = None, *, strict: bool = False) -> list[Order]:
@@ -634,7 +638,7 @@ class OKX(BaseExchange):
         result = self._check(data)
         if strict and (data.get("code") != "0" or not isinstance(data.get("data"), list)):
             raise ExchangeError("okx: incomplete pending order snapshot", exchange="okx")
-        return [_parse_order(self.from_native(o.get("instId", "")), o) for o in result]
+        return [_parse_order(self.from_native(o.get("instId", "")), o, self.market_type) for o in result]
 
     async def fetch_my_trades(
         self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
@@ -828,14 +832,34 @@ def _parse_my_trade(symbol: str, t: dict[str, Any]) -> MyTrade:
     )
 
 
-def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
+def _parse_order(symbol: str, d: dict[str, Any], market_type: str = "spot") -> Order:
+    spot = market_type == "spot"
+    quote_amount = (
+        spot
+        and d.get("ordType", "").lower() == "market"
+        and (d.get("tgtCcy") or ("quote_ccy" if d.get("side", "").lower() == "buy" else "base_ccy")) == "quote_ccy"
+    )
+    requested = Decimal(str(d.get("sz") or 0))
+    executed = Decimal(str(d.get("accFillSz") or 0))
+    terminal = d.get("state", "").lower() in ("filled", "canceled", "mmp_canceled")
+    remaining = (
+        (Decimal(0) if terminal else None if quote_amount else max(Decimal(0), requested - executed)) if spot else None
+    )
+    # OKX reports accumulated base fills and average price, not cumulative quote value.
+    cost = executed * Decimal(str(d["avgPx"])) if spot and d.get("avgPx") not in (None, "") else None
     return Order(
         id=d.get("ordId", ""),
         client_order_id=d.get("clOrdId") or None,
         symbol=symbol,
         side=d.get("side", "").lower(),
         type=d.get("ordType", "").lower(),
-        amount=float(d.get("sz", 0)),
+        amount=0.0 if quote_amount else float(requested),
+        amount_exact=requested if spot and not quote_amount else None,
+        amount_quote=requested if quote_amount else None,
+        filled_exact=executed if spot else None,
+        cost=cost,
+        remaining=float(remaining) if remaining is not None else None,
+        remaining_exact=remaining,
         price=float(d["px"]) if d.get("px") and float(d["px"]) > 0 else None,
         filled=float(d.get("accFillSz", 0)),
         status=d.get("state", ""),
