@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel
@@ -14,6 +15,10 @@ class MyTrade(BaseModel):
     order_id: str
     symbol: str
     side: str
+    # Exact venue values when supplied by a decimal-aware adapter.
+    amount_exact: Decimal | None = None
+    price_exact: Decimal | None = None
+    fee_exact: Decimal | None = None
     price: float
     amount: float
     fee: float = 0.0

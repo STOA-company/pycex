@@ -15,8 +15,8 @@ from __future__ import annotations
 import pytest
 from pytest_httpx import HTTPXMock
 
-from pycex.exchanges.okx import OKX, _parse_position
 from pycex.exceptions import ExchangeError
+from pycex.exchanges.okx import OKX, _parse_position
 
 
 def _row(**kw: object) -> dict:

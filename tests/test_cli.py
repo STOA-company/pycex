@@ -18,7 +18,7 @@ import pytest
 from pycex import cli
 from pycex.base import BaseExchange
 from pycex.cli import _make_exchange, main
-from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, Korbit, Upbit
+from pycex.exchanges import OKX, Binance, Bitget, Bithumb, Bybit, DigitalX, Korbit, Upbit
 from pycex.factory import EXCHANGES, create_exchange
 from pycex.mcp import server as mcp_server
 
@@ -36,7 +36,7 @@ def _namespace(**kw: object) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-# ── factory: seven exchanges ──
+# ── factory: eight exchanges ──
 
 _EXPECTED_CLASSES: dict[str, type[BaseExchange]] = {
     "binance": Binance,
@@ -46,6 +46,7 @@ _EXPECTED_CLASSES: dict[str, type[BaseExchange]] = {
     "upbit": Upbit,
     "bithumb": Bithumb,
     "korbit": Korbit,
+    "digitalx": DigitalX,
 }
 
 _PASSPHRASE_NAMES = ("okx", "bitget")
@@ -59,7 +60,7 @@ def _construct(name: str) -> BaseExchange:
     return create_exchange(name, api_key="k", secret="s")
 
 
-def test_exchanges_registry_has_all_seven() -> None:
+def test_exchanges_registry_has_all_eight() -> None:
     assert set(EXCHANGES) == set(_EXPECTED_CLASSES)
 
 

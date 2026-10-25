@@ -401,10 +401,14 @@ class OKX(BaseExchange):
             # A caller measuring flatness must not turn malformed rows into zero.
             for row in result:
                 try:
-                    valid = (isinstance(row, dict) and isinstance(row.get("instId"), str)
-                             and bool(row["instId"]) and "pos" in row
-                             and not isinstance(row["pos"], bool)
-                             and math.isfinite(float(row["pos"])))
+                    valid = (
+                        isinstance(row, dict)
+                        and isinstance(row.get("instId"), str)
+                        and bool(row["instId"])
+                        and "pos" in row
+                        and not isinstance(row["pos"], bool)
+                        and math.isfinite(float(row["pos"]))
+                    )
                 except (TypeError, ValueError, OverflowError):
                     valid = False
                 if not valid:
@@ -442,14 +446,15 @@ class OKX(BaseExchange):
         query = {"instId": self.to_native(symbol), "mgnMode": mgn_mode}
         full_path = f"{path}?{urlencode(query)}"
         async with self._rate_limiter.request("query"):
-            data = await self._http.get(path, params=query,
-                                        headers=self._auth_headers("GET", full_path))
+            data = await self._http.get(path, params=query, headers=self._auth_headers("GET", full_path))
         result = self._check(data)
         if data.get("code") != "0" or not isinstance(data.get("data"), list):
             raise ExchangeError("okx: incomplete leverage snapshot", exchange="okx")
         return result
 
-    async def set_leverage(self, symbol: str, lever: float, mgn_mode: str = "cross", *, strict: bool = False) -> dict[str, Any]:
+    async def set_leverage(
+        self, symbol: str, lever: float, mgn_mode: str = "cross", *, strict: bool = False
+    ) -> dict[str, Any]:
         """``POST /api/v5/account/set-leverage`` for one SWAP instrument.
 
         Rejects — before the request goes out — what OKX cannot accept: a spot

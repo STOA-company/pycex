@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel
@@ -11,6 +12,9 @@ class BalanceEntry(BaseModel):
     """Balance for a single asset."""
 
     asset: str
+    # Exact venue values when supplied by a decimal-aware adapter.
+    free_exact: Decimal | None = None
+    locked_exact: Decimal | None = None
     free: float
     locked: float
 
