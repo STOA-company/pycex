@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
 
@@ -294,7 +295,9 @@ class Korbit(BaseExchange):
             symbol=symbol,
             side=canonical_side,
             type=canonical_type,
-            amount=amount,
+            amount=0 if canonical_side == "buy" and canonical_type != "limit" else amount,
+            amount_exact=None if canonical_side == "buy" and canonical_type != "limit" else Decimal(str(amount)),
+            amount_quote=Decimal(str(amount)) if canonical_side == "buy" and canonical_type != "limit" else None,
             price=price if canonical_type == "limit" else None,
             client_order_id=client_order_id,
             raw=data,
@@ -468,25 +471,37 @@ def _parse_public_trade(symbol: str, d: dict[str, Any]) -> Trade:
 
 
 def _parse_order(symbol: str, d: dict[str, Any]) -> Order:
-    # A market-buy order carries `amt` (quote-currency total spent), not `qty` —
-    # `GET /v2/orders` response fields (docs.korbit.co.kr/llms/en/rest_api/trading.md).
-    # For that case `amount` below is then the quote total, consistent with
-    # `create_order`'s own echo of a market-buy's `amount` argument. Both raw fields
-    # are preserved in `raw` regardless of which one was used.
-    qty = d.get("qty")
-    amt = d.get("amt")
-    amount = float(qty) if qty else float(amt or 0)
-    price = d.get("price")
+    quote_buy = d.get("side") == "buy" and d.get("orderType") in {"market", "best"}
+    amount = None if quote_buy else Decimal(str(d.get("qty") or "0"))
+    budget = Decimal(str(d["amt"])) if quote_buy and d.get("amt") else None
+    cost = Decimal(str(d["filledAmt"])) if d.get("filledAmt") is not None else None
+    filled = Decimal(str(d.get("filledQty") or "0"))
+    price = Decimal(str(d["price"])) if d.get("price") else None
+    status = str(d.get("status", ""))
+    # Venue `filled` includes IOC/market/price-protection remainder cancellation.
+    # Compare quote with quote for budget buys, base with base otherwise.
+    target, executed = (budget, cost) if quote_buy else (amount, filled)
+    if status == "filled" and target is not None and executed is not None and executed < target:
+        status = "partiallyFilledCanceled" if filled > 0 else "canceled"
+    terminal = status in {"filled", "canceled", "partiallyFilledCanceled", "expired"}
+    remaining = Decimal(0) if terminal else (max(Decimal(0), amount - filled) if amount is not None else None)
     return Order(
         id=str(d.get("orderId", "")),
         client_order_id=d.get("clientOrderId") or None,
         symbol=symbol,
         side=str(d.get("side", "")).lower(),
         type=str(d.get("orderType", "")).lower(),
-        amount=amount,
-        price=float(price) if price not in (None, "") else None,
-        filled=float(d.get("filledQty", 0) or 0),
-        status=str(d.get("status", "")),
+        amount=float(amount) if amount is not None else 0,
+        amount_exact=amount,
+        amount_quote=budget,
+        cost=cost,
+        price=float(price) if price is not None else None,
+        price_exact=price,
+        filled=float(filled),
+        filled_exact=filled,
+        remaining=float(remaining) if remaining is not None else None,
+        remaining_exact=remaining,
+        status=status,
         timestamp=int(d.get("createdAt", 0) or 0),
         raw=d,
     )

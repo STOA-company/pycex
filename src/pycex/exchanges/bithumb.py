@@ -40,6 +40,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from pycex.auth import bithumb_headers
@@ -212,10 +213,9 @@ class Bithumb(KrwV1Mixin, BaseExchange):
         ``order_type="market"`` with ``amount`` as the base-asset volume —
         matching every other adapter's convention.
 
-        The returned ``Order``'s ``side``/``type``/``amount``/``price`` echo
-        exactly what the caller passed in (``price`` forced to ``None`` for
-        market orders) rather than whatever Bithumb's response happens to
-        contain — see ``raw`` for the actual response.
+        Returned amounts are base quantities. For quote-budget buys,
+        amount_quote holds the budget and amount=0/amount_exact=None denotes
+        an unknown requested base quantity. raw preserves the venue response.
 
         ``client_order_id`` is sent as the v2 ``client_order_id`` body field
         (1-36 characters of ``A-Za-z0-9_-``; anything else raises
@@ -250,7 +250,9 @@ class Bithumb(KrwV1Mixin, BaseExchange):
                 "client_order_id": parsed.client_order_id or client_order_id,
                 "side": canonical_side,
                 "type": canonical_type,
-                "amount": amount,
+                "amount": 0 if canonical_side == "buy" and canonical_type != "limit" else amount,
+                "amount_exact": None if canonical_side == "buy" and canonical_type != "limit" else Decimal(str(amount)),
+                "amount_quote": Decimal(str(amount)) if canonical_side == "buy" and canonical_type != "limit" else None,
                 "price": price if canonical_type == "limit" else None,
             }
         )

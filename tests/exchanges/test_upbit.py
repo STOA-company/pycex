@@ -164,7 +164,7 @@ async def test_create_order_market_buy_uses_price_ord_type(httpx_mock: HTTPXMock
     assert "volume" not in body
     _assert_bearer_query_hash(req.headers, expected_body)
     assert order.symbol == "BTC/KRW"
-    assert order.amount == 100_000 and order.price is None  # echoes the request, not the response
+    assert order.amount == 0 and order.amount_quote == 100_000 and order.price is None
     await ex.close()
 
 
@@ -493,3 +493,31 @@ async def test_open_orders_and_cancel_echo_identifier(httpx_mock: HTTPXMock) -> 
     assert (await ex.fetch_open_orders("BTC/KRW"))[0].client_order_id == CID
     assert (await ex.cancel_order("order-uuid-1", "BTC/KRW")).client_order_id == CID
     await ex.close()
+
+
+@pytest.mark.parametrize("state", ["wait", "cancel", "done"])
+def test_quote_buy_units_and_remaining(state):
+    from decimal import Decimal
+
+    from pycex.exchanges.upbit import _parse_upbit_order
+
+    order = _parse_upbit_order(
+        "BTC/KRW",
+        dict(
+            uuid="1",
+            side="bid",
+            ord_type="price",
+            price="100000",
+            volume=None,
+            executed_volume="0.0009",
+            remaining_volume=None,
+            state=state,
+            trades=[dict(funds="90000")],
+        ),
+    )
+    assert order.amount == 0 and order.amount_exact is None
+    assert order.amount_quote == Decimal("100000")
+    assert order.cost == Decimal("90000")
+    assert order.filled_exact == Decimal("0.0009")
+    assert order.remaining_exact == (None if state == "wait" else Decimal(0))
+    assert order.status == state

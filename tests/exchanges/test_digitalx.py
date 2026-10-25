@@ -205,7 +205,9 @@ async def test_market_kind_walk(venue, base, quote, side, kind, tif):
     order = await ex.create_order(
         symbol, side, kind, amount, Decimal("100") if kind == "limit" else None, client_order_id="walk:1", **options
     )
-    assert order.amount_exact == amount
+    quote_buy = kind != "limit" and side == "buy"
+    assert order.amount_exact == (None if quote_buy else amount)
+    assert order.amount_quote == (amount if quote_buy else None)
     assert order.status == "pending"
     assert (await ex.fetch_open_orders(symbol))[0].id == order.id
     count = len(server.requests)
@@ -220,7 +222,8 @@ async def test_market_kind_walk(venue, base, quote, side, kind, tif):
     state = await ex.fetch_order(None, symbol, client_order_id="walk:1")
     assert state.filled_exact == Decimal(quantity)
     if tif in {"ioc", "fok"}:
-        assert state.status == "filled"
+        assert state.status == ("filled" if tif == "fok" else "partiallyFilledCanceled")
+        assert state.remaining_exact == 0
     else:
         assert state.status == "partiallyFilled"
         state = await ex.cancel_order(order.id, symbol)
@@ -334,7 +337,7 @@ async def test_invalid_input_sends_nothing(venue, kwargs):
 
 
 def test_factory_and_codes():
-    assert isinstance(create_exchange("digitalx", sandbox=True), DigitalX)
+    assert create_exchange("digitalx", sandbox=True, account_seq=3).account_seq == 3
     assert type(_map_error(200, {"error": {"code": 200, "message": "NO_BALANCE"}})) is InsufficientBalanceError
 
 
@@ -346,7 +349,9 @@ async def test_ed25519_wire():
 
     key = Ed25519PrivateKey.generate()
     pem = key.private_bytes(crypto.Encoding.PEM, crypto.PrivateFormat.PKCS8, crypto.NoEncryption()).decode()
-    ex = DigitalX("ephemeral-test", pem, sandbox=True, auth_type="ed25519")
+    ex = create_exchange(
+        "digitalx", api_key="ephemeral-test", secret=pem, sandbox=True, auth_type="ed25519", account_seq=2
+    )
 
     def verify(req):
         raw = req.url.query.decode()
@@ -417,4 +422,87 @@ async def test_mock_server_quota_returns_retry_after_without_retry(venue):
         await ex.create_order("BTC/KRW", "buy", "limit", 1, 100, client_order_id="second")
     assert caught.value.retry_after == 1
     assert len(server.orders) == 1 and len(server.requests) == 2
+    await ex.close()
+
+
+@pytest.mark.parametrize("parser", ["digitalx", "korbit"])
+@pytest.mark.parametrize("quote_buy", [False, True])
+@pytest.mark.parametrize("status", ["filled", "partiallyFilled", "canceled", "partiallyFilledCanceled", "expired"])
+def test_terminal_and_units(parser, quote_buy, status):
+    from pycex.exchanges.digitalx import _order
+    from pycex.exchanges.korbit import _parse_order
+
+    raw = dict(
+        orderId=1,
+        side="buy",
+        orderType="market" if quote_buy else "limit",
+        amt="100000",
+        qty="2",
+        filledQty="0.5",
+        filledAmt="25000",
+        status=status,
+    )
+    order = (_order if parser == "digitalx" else _parse_order)("BTC/KRW", raw)
+    assert order.filled_exact == Decimal("0.5")
+    assert order.cost == Decimal("25000")
+    assert order.amount_exact == (None if quote_buy else Decimal(2))
+    assert order.amount == (0 if quote_buy else 2)
+    assert order.amount_quote == (Decimal(100000) if quote_buy else None)
+    if status == "partiallyFilled":
+        assert order.status == status
+        assert order.remaining_exact == (None if quote_buy else Decimal("1.5"))
+    else:
+        assert order.status == ("partiallyFilledCanceled" if status == "filled" else status)
+        assert order.remaining == order.remaining_exact == 0
+    assert order.raw == raw
+
+
+@pytest.mark.parametrize("quote_buy", [False, True])
+@pytest.mark.parametrize("filled", ["0", "2"])
+def test_terminal_zero_and_full(quote_buy, filled):
+    from pycex.exchanges.digitalx import _order
+
+    order = _order(
+        "BTC/KRW",
+        dict(
+            orderId=1,
+            side="buy",
+            orderType="market" if quote_buy else "limit",
+            qty="2",
+            amt="100000",
+            filledQty=filled,
+            filledAmt="100000" if filled == "2" else "0",
+            status="filled",
+        ),
+    )
+    assert order.status == ("filled" if filled == "2" else "canceled")
+    assert order.remaining_exact == 0
+
+
+@pytest.mark.parametrize("code", ["not-a-number", None, {}, []])
+def test_malformed_error_code_is_unknown(code):
+    from pycex.exchanges.digitalx import _unwrap
+
+    with pytest.raises(ExchangeError) as caught:
+        _unwrap(dict(success=False, error=dict(code=code, message="NO_BALANCE")))
+    assert type(caught.value) is ExchangeError
+
+
+async def test_transport_error_never_discloses_signature(venue):
+    ex, _ = venue
+
+    def fail(request):
+        raise NetworkError(
+            "signature=synthetic-signature timestamp=123 secret=synthetic-secret "
+            + request.content.decode()
+            + str(request.url)
+        )
+
+    ex._http.set_transport_factory(lambda: httpx.MockTransport(fail))
+    for method in ("GET", "POST", "DELETE"):
+        with pytest.raises(NetworkError) as caught:
+            await ex._private(method, "/v2/orders", {"symbol": "btc_krw"})
+        message = str(caught.value)
+        assert not any(word in message for word in ("signature", "timestamp", "secret", "synthetic-", ex._secret))
+        assert caught.value.__suppress_context__
     await ex.close()

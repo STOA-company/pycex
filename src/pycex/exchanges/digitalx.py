@@ -27,7 +27,7 @@ from pycex.exceptions import (
     PyCexError,
     RateLimitError,
 )
-from pycex.exchanges.korbit import _CLIENT_ORDER_ID_RE, Korbit
+from pycex.exchanges.korbit import _CLIENT_ORDER_ID_RE, Korbit, _parse_order
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.mytrade import MyTrade
@@ -89,7 +89,11 @@ def _map_error(status: int, data: dict[str, Any]) -> PyCexError:
 def _unwrap(data: Any) -> Any:
     if not isinstance(data, dict) or data.get("success") is not True:
         if isinstance(data, dict) and data.get("success") is False:
-            raise _map_error(int((data.get("error") or {}).get("code", 200)), data)
+            try:
+                status = int((data.get("error") or {}).get("code", 200))
+            except (ValueError, TypeError, AttributeError):
+                raise ExchangeError("Malformed error response", exchange="digitalx") from None
+            raise _map_error(status, data)
         raise ExchangeError("Malformed response", exchange="digitalx")
     return data.get("data")
 
@@ -105,31 +109,13 @@ def _money(value: Decimal | str | float, field: str) -> str:
 
 
 def _order(symbol: str, d: dict[str, Any]) -> Order:
-    amount = Decimal(d.get("qty") or d.get("amt") or "0")
-    price = Decimal(d["price"]) if d.get("price") else None
-    filled = Decimal(d.get("filledQty") or "0")
-    return Order(
-        id=str(d["orderId"]),
-        symbol=symbol,
-        side=d["side"],
-        type=d["orderType"],
-        amount=float(amount),
-        price=float(price) if price is not None else None,
-        filled=float(filled),
-        amount_exact=amount,
-        price_exact=price,
-        filled_exact=filled,
-        client_order_id=d.get("clientOrderId"),
-        status=d.get("status", "unknown"),
-        timestamp=d.get("createdAt", 0),
-        raw=d,
-    )
+    return _parse_order(symbol, d)
 
 
 class DigitalX(Korbit):
-    """Spot markets discovered from currencyPairs; amount is quote money for market/best buys.
+    """Spot markets from currencyPairs; create_order amount is quote money for market/best buys.
 
-    Legacy float result fields remain compatible. Use *_exact Decimal fields or
+    Result amount/filled are base quantities; amount_quote/cost are quote money. Use *_exact Decimal fields or
     raw string fields for accounting. No keys are read from the environment here.
     ED25519 accepts a PEM private key in ``secret`` and requires the ed25519 extra.
     """

@@ -229,7 +229,7 @@ def test_parse_order_market_buy_amount_from_amt_when_qty_absent() -> None:
         "createdAt": 1788015600000,
     }
     order = _parse_order("BTC/KRW", raw)
-    assert order.amount == 100000.0
+    assert order.amount == 0 and order.amount_quote == 100000
     assert order.raw["amt"] == "100000"
     assert order.raw.get("qty") is None
 
@@ -252,7 +252,7 @@ async def test_fetch_order_market_buy_uses_amt(httpx_mock: HTTPXMock) -> None:
     )
     ex = Korbit(api_key="k", secret=SECRET)
     order = await ex.fetch_order("42", "BTC/KRW")
-    assert order.amount == 100000.0
+    assert order.amount == 0 and order.amount_quote == 100000
     await ex.close()
 
 
@@ -304,7 +304,7 @@ async def test_create_order_market_buy_uses_amt(httpx_mock: HTTPXMock) -> None:
     assert "qty=" not in body
     _assert_valid_form_signature(req.content)
     assert order.side == "buy" and order.type == "market"
-    assert order.amount == 100_000 and order.price is None
+    assert order.amount == 0 and order.amount_quote == 100_000 and order.price is None
     await ex.close()
 
 
