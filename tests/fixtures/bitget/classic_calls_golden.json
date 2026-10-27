@@ -1,0 +1,411 @@
+{
+ "linear": {
+  "calls": [
+   [
+    "GET",
+    "/api/v2/mix/account/accounts?productType=USDT-FUTURES",
+    "",
+    "+pNyqreQRbsRwrNE",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT",
+    "",
+    "YF1lEe+KqTIFgCvj",
+    "1760000000000"
+   ],
+   [
+    "POST",
+    "/api/v2/mix/order/place-order",
+    "{\"symbol\": \"BTCUSDT\", \"productType\": \"USDT-FUTURES\", \"marginMode\": \"crossed\", \"marginCoin\": \"USDT\", \"size\": \"0.01\", \"side\": \"buy\", \"orderType\": \"market\", \"clientOid\": \"cid1\"}",
+    "5iwP0xFwykCY16q8",
+    "1760000000000"
+   ],
+   [
+    "POST",
+    "/api/v2/mix/order/place-order",
+    "{\"symbol\": \"BTCUSDT\", \"productType\": \"USDT-FUTURES\", \"marginMode\": \"crossed\", \"marginCoin\": \"USDT\", \"size\": \"0.01\", \"side\": \"sell\", \"orderType\": \"limit\", \"force\": \"gtc\", \"price\": \"61000.0\", \"clientOid\": \"cid2\"}",
+    "pE2+9YFfEAP8/kN2",
+    "1760000000000"
+   ],
+   [
+    "POST",
+    "/api/v2/mix/order/cancel-order",
+    "{\"productType\": \"USDT-FUTURES\", \"symbol\": \"BTCUSDT\", \"orderId\": \"100\"}",
+    "EFl9Vn9v7JwPhMRC",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/mix/order/detail?productType=USDT-FUTURES&symbol=BTCUSDT&orderId=100",
+    "",
+    "hliD9yQoD0Flvl9U",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/mix/order/orders-pending?productType=USDT-FUTURES&symbol=BTCUSDT",
+    "",
+    "+vs0oUoDFO+UbWQD",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/mix/order/fills?productType=USDT-FUTURES&symbol=BTCUSDT&limit=5",
+    "",
+    "rSTwuEn1oUfz/mhh",
+    "1760000000000"
+   ]
+  ],
+  "results": [
+   {
+    "assets": [
+     {
+      "asset": "USDT",
+      "free": 100.0,
+      "free_exact": null,
+      "locked": 1.0,
+      "locked_exact": null
+     }
+    ],
+    "raw": {
+     "code": "00000",
+     "data": [
+      {
+       "available": "100",
+       "locked": "1",
+       "marginCoin": "USDT"
+      }
+     ],
+     "msg": "success",
+     "requestTime": 1
+    }
+   },
+   [
+    "symbol='BTC/USDT:USDT' side='long' amount=0.01 entry_price=60000.0 unrealized_pnl=5.0 leverage=3.0 liquidation_price=40000.0 margin_mode=None timestamp=1 raw={'symbol': 'BTCUSDT', 'holdSide': 'long', 'total': '0.01', 'openPriceAvg': '60000', 'unrealizedPL': '5', 'leverage': '3', 'liquidationPrice': '40000', 'cTime': '1'}"
+   ],
+   {
+    "amount": 0.01,
+    "amount_exact": null,
+    "amount_quote": null,
+    "client_order_id": "cid1",
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": null,
+    "price_exact": null,
+    "raw": {
+     "code": "00000",
+     "data": {
+      "clientOid": "cid1",
+      "orderId": "100"
+     },
+     "msg": "success",
+     "requestTime": 1
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "buy",
+    "status": "",
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 0,
+    "type": "market"
+   },
+   {
+    "amount": 0.01,
+    "amount_exact": null,
+    "amount_quote": null,
+    "client_order_id": "cid2",
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": 61000.0,
+    "price_exact": null,
+    "raw": {
+     "code": "00000",
+     "data": {
+      "clientOid": "cid2",
+      "orderId": "100"
+     },
+     "msg": "success",
+     "requestTime": 1
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "sell",
+    "status": "",
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 0,
+    "type": "limit"
+   },
+   {
+    "amount": 0.0,
+    "amount_exact": null,
+    "amount_quote": null,
+    "client_order_id": null,
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": null,
+    "price_exact": null,
+    "raw": {
+     "code": "00000",
+     "data": {
+      "clientOid": "",
+      "orderId": "100"
+     },
+     "msg": "success",
+     "requestTime": 1
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "",
+    "status": "",
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 0,
+    "type": ""
+   },
+   {
+    "amount": 0.01,
+    "amount_exact": null,
+    "amount_quote": null,
+    "client_order_id": null,
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": 50000.0,
+    "price_exact": null,
+    "raw": {
+     "baseVolume": "0",
+     "cTime": "1",
+     "orderId": "100",
+     "orderType": "limit",
+     "price": "50000",
+     "side": "buy",
+     "size": "0.01",
+     "state": "live",
+     "status": "live",
+     "symbol": "BTCUSDT"
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "buy",
+    "status": "live",
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1,
+    "type": "limit"
+   },
+   [
+    "id='100' client_order_id=None symbol='BTC/USDT:USDT' side='buy' type='limit' amount_exact=None price_exact=None filled_exact=None amount_quote=None cost=None remaining=None remaining_exact=None amount=0.01 price=50000.0 filled=0.0 status='live' timestamp=1 raw={'symbol': 'BTCUSDT', 'orderId': '100', 'side': 'buy', 'orderType': 'limit', 'size': '0.01', 'price': '50000', 'baseVolume': '0', 'status': 'live', 'cTime': '1'}"
+   ],
+   [
+    "id='t1' order_id='100' symbol='BTC/USDT:USDT' side='buy' amount_exact=None price_exact=None fee_exact=None price=60000.0 amount=0.01 fee=0.1 fee_asset='USDT' timestamp=1 raw={'tradeId': 't1', 'orderId': '100', 'side': 'buy', 'price': '60000', 'baseVolume': '0.01', 'feeDetail': [{'feeCoin': 'USDT', 'totalFee': '0.1'}], 'cTime': '1'}"
+   ]
+  ]
+ },
+ "spot": {
+  "calls": [
+   [
+    "GET",
+    "/api/v2/spot/account/assets",
+    "",
+    "cSckXSHlsBcNRg0r",
+    "1760000000000"
+   ],
+   [
+    "POST",
+    "/api/v2/spot/trade/place-order",
+    "{\"symbol\": \"BTCUSDT\", \"side\": \"buy\", \"orderType\": \"market\", \"size\": \"0.01\", \"clientOid\": \"cid1\"}",
+    "A4ZTZseFUycySeB7",
+    "1760000000000"
+   ],
+   [
+    "POST",
+    "/api/v2/spot/trade/place-order",
+    "{\"symbol\": \"BTCUSDT\", \"side\": \"sell\", \"orderType\": \"limit\", \"size\": \"0.01\", \"force\": \"gtc\", \"price\": \"61000.0\", \"clientOid\": \"cid2\"}",
+    "QyPjme+WQ+pksZVX",
+    "1760000000000"
+   ],
+   [
+    "POST",
+    "/api/v2/spot/trade/cancel-order",
+    "{\"symbol\": \"BTCUSDT\", \"orderId\": \"100\"}",
+    "OY9XBXTwoNDMnsLK",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/spot/trade/orderInfo?orderId=100",
+    "",
+    "ugcCv3mDImYgJndZ",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/spot/trade/unfilled-orders?symbol=BTCUSDT",
+    "",
+    "2OGs+HLFd7lJiNWZ",
+    "1760000000000"
+   ],
+   [
+    "GET",
+    "/api/v2/spot/trade/fills?symbol=BTCUSDT&limit=5",
+    "",
+    "YiECPK7mPOo9RzOA",
+    "1760000000000"
+   ]
+  ],
+  "results": [
+   {
+    "assets": [
+     {
+      "asset": "USDT",
+      "free": 100.0,
+      "free_exact": null,
+      "locked": 1.0,
+      "locked_exact": null
+     }
+    ],
+    "raw": {
+     "code": "00000",
+     "data": [
+      {
+       "available": "100",
+       "coin": "USDT",
+       "frozen": "1",
+       "locked": "0"
+      }
+     ],
+     "msg": "success",
+     "requestTime": 1
+    }
+   },
+   {
+    "amount": 0.0,
+    "amount_exact": null,
+    "amount_quote": "0.01",
+    "client_order_id": "cid1",
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": null,
+    "price_exact": null,
+    "raw": {
+     "code": "00000",
+     "data": {
+      "clientOid": "cid1",
+      "orderId": "100"
+     },
+     "msg": "success",
+     "requestTime": 1
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "buy",
+    "status": "",
+    "symbol": "BTC/USDT",
+    "timestamp": 0,
+    "type": "market"
+   },
+   {
+    "amount": 0.01,
+    "amount_exact": "0.01",
+    "amount_quote": null,
+    "client_order_id": "cid2",
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": 61000.0,
+    "price_exact": null,
+    "raw": {
+     "code": "00000",
+     "data": {
+      "clientOid": "cid2",
+      "orderId": "100"
+     },
+     "msg": "success",
+     "requestTime": 1
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "sell",
+    "status": "",
+    "symbol": "BTC/USDT",
+    "timestamp": 0,
+    "type": "limit"
+   },
+   {
+    "amount": 0.0,
+    "amount_exact": null,
+    "amount_quote": null,
+    "client_order_id": null,
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": null,
+    "id": "100",
+    "price": null,
+    "price_exact": null,
+    "raw": {
+     "code": "00000",
+     "data": {
+      "clientOid": "",
+      "orderId": "100"
+     },
+     "msg": "success",
+     "requestTime": 1
+    },
+    "remaining": null,
+    "remaining_exact": null,
+    "side": "",
+    "status": "",
+    "symbol": "BTC/USDT",
+    "timestamp": 0,
+    "type": ""
+   },
+   {
+    "amount": 0.01,
+    "amount_exact": "0.01",
+    "amount_quote": null,
+    "client_order_id": null,
+    "cost": null,
+    "filled": 0.0,
+    "filled_exact": "0",
+    "id": "100",
+    "price": 50000.0,
+    "price_exact": null,
+    "raw": {
+     "baseVolume": "0",
+     "cTime": "1",
+     "orderId": "100",
+     "orderType": "limit",
+     "price": "50000",
+     "side": "buy",
+     "size": "0.01",
+     "state": "live",
+     "status": "live",
+     "symbol": "BTCUSDT"
+    },
+    "remaining": 0.01,
+    "remaining_exact": "0.01",
+    "side": "buy",
+    "status": "live",
+    "symbol": "BTC/USDT",
+    "timestamp": 1,
+    "type": "limit"
+   },
+   [
+    "id='100' client_order_id=None symbol='BTC/USDT' side='buy' type='limit' amount_exact=Decimal('0.01') price_exact=None filled_exact=Decimal('0') amount_quote=None cost=None remaining=0.01 remaining_exact=Decimal('0.01') amount=0.01 price=50000.0 filled=0.0 status='live' timestamp=1 raw={'symbol': 'BTCUSDT', 'orderId': '100', 'side': 'buy', 'orderType': 'limit', 'size': '0.01', 'price': '50000', 'baseVolume': '0', 'status': 'live', 'cTime': '1'}"
+   ],
+   [
+    "id='t1' order_id='100' symbol='BTC/USDT' side='buy' amount_exact=None price_exact=None fee_exact=None price=60000.0 amount=0.01 fee=0.1 fee_asset='USDT' timestamp=1 raw={'tradeId': 't1', 'orderId': '100', 'side': 'buy', 'priceAvg': '60000', 'size': '0.01', 'feeDetail': {'feeCoin': 'USDT', 'totalFee': '0.1'}, 'cTime': '1'}"
+   ]
+  ]
+ }
+}
