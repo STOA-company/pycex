@@ -99,8 +99,11 @@ adapters' posture in this phase.
 
 from __future__ import annotations
 
+import functools
 import json
-from collections.abc import Sequence
+import time
+import uuid
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
@@ -114,6 +117,7 @@ from pycex.exceptions import (
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
+    NetworkError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -204,6 +208,39 @@ _PATHS: dict[str, dict[str, str]] = {
         "fills": "/api/v2/mix/order/fills",
     },
 }
+
+
+# ── Unified Trading Account (UTA, v3) ──
+#
+# A UTA API key cannot call Classic (v2) endpoints: Bitget answers code 40085 ("Unified Account
+# mode, Classic Account API not supported"). The first 40085 on a key marks that key as UTA
+# (process-wide cache) and the same call is replayed against the v3 endpoints below. Classic keys
+# never see a 40085, so their request sequence, bodies and signatures are untouched.
+# Docs: https://www.bitget.com/docs/uta/catalog (paths/fields cross-read 2026-10-28, see tests/test_bitget_uta.py)
+_UTA_KEYS: set[str] = set()
+_UNIFIED_REJECT = "40085"
+# Per the place-order docs: for these codes query the order by clientOid to learn whether it was placed.
+_UTA_UNKNOWN_CODES = frozenset({"40010", "40725", "45001"})
+
+
+def _uta_fallback(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Route a private method to ``_uta_<name>`` once the key is known to be UTA."""
+
+    def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        async def wrapper(self: Bitget, *a: Any, **kw: Any) -> Any:
+            if self._is_uta():
+                return await getattr(self, f"_uta_{name}")(*a, **kw)
+            try:
+                return await fn(self, *a, **kw)
+            except ExchangeError as e:
+                if str(e.code) == _UNIFIED_REJECT and self._mark_uta():
+                    return await getattr(self, f"_uta_{name}")(*a, **kw)
+                raise
+
+        return wrapper
+
+    return deco
 
 
 class Bitget(BaseExchange):
@@ -410,6 +447,7 @@ class Bitget(BaseExchange):
 
     # ── Account ──
 
+    @_uta_fallback("balance")
     async def fetch_balance(self) -> Balance:
         params = self._mix_params() if self.market_type == "linear" else None
         path = self._path(self._p("balance"), params)
@@ -420,6 +458,7 @@ class Bitget(BaseExchange):
             return _parse_balance_linear(result, data)
         return _parse_balance(result, data)
 
+    @_uta_fallback("positions")
     async def fetch_positions(self, symbols: list[str] | None = None) -> list[Position]:
         if self.market_type != "linear":
             return await super().fetch_positions(symbols)
@@ -450,6 +489,7 @@ class Bitget(BaseExchange):
 
     # ── Trading ──
 
+    @_uta_fallback("create_order")
     async def create_order(
         self,
         symbol: str,
@@ -509,6 +549,7 @@ class Bitget(BaseExchange):
             raw=data,
         )
 
+    @_uta_fallback("cancel_order")
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)
         path = self._p("cancel")
@@ -524,6 +565,7 @@ class Bitget(BaseExchange):
         first = r[0] if r else {}
         return Order(id=first.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
 
+    @_uta_fallback("fetch_order")
     async def fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
         if bool(order_id) == bool(client_order_id):
             raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
@@ -543,6 +585,7 @@ class Bitget(BaseExchange):
             return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
         return _parse_order_mix(symbol, r[0]) if self.market_type == "linear" else _parse_order(symbol, r[0])
 
+    @_uta_fallback("open_orders")
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
         native = self.to_native(symbol) if symbol else None
         if self.market_type == "linear":
@@ -557,6 +600,7 @@ class Bitget(BaseExchange):
             data = await self._http.get(path, headers=self._signed_get(path))
         return [_parse_order(self.from_native(o.get("symbol", "")), o) for o in self._check(data)]
 
+    @_uta_fallback("my_trades")
     async def fetch_my_trades(
         self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
     ) -> list[MyTrade]:
@@ -584,6 +628,225 @@ class Bitget(BaseExchange):
             data = await self._http.get(path, headers=self._signed_get(path))
         result = self._check(data)
         return [_parse_my_trade_spot(symbol, t) for t in result]
+
+    # ── UTA (v3) ──
+
+    def _is_uta(self) -> bool:
+        return bool(self._api_key) and self._api_key in _UTA_KEYS
+
+    def _mark_uta(self) -> bool:
+        # Demo (paptrading) UTA needs its own header contract, which is unverified -> never auto-switch in sandbox.
+        if self.sandbox or not self._api_key:
+            return False
+        _UTA_KEYS.add(self._api_key)
+        return True
+
+    @property
+    def _uta_category(self) -> str:
+        return "USDT-FUTURES" if self.market_type == "linear" else "SPOT"
+
+    async def _uta_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        full = self._path(path, params)
+        async with self._rate_limiter.request("query"):
+            return await self._http.get(full, headers=self._signed_get(full))  # type: ignore[no-any-return]
+
+    async def _uta_post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        body_str = json.dumps(body)
+        async with self._rate_limiter.request("order"):
+            return await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))  # type: ignore[no-any-return]
+
+    async def _uta_balance(self) -> Balance:
+        data = await self._uta_get("/api/v3/account/assets")
+        result = self._check(data)
+        assets = (result[0] if result else {}).get("assets", []) or []
+        entries = []
+        for a in assets:
+            free = float(a.get("available", 0) or 0)
+            locked = float(a.get("locked", 0) or 0)
+            if free > 0 or locked > 0:
+                entries.append(BalanceEntry(asset=str(a.get("coin", "")), free=free, locked=locked))
+        return Balance(assets=entries, raw=data)
+
+    async def _uta_positions(self, symbols: list[str] | None = None) -> list[Position]:
+        if self.market_type != "linear":
+            return await BaseExchange.fetch_positions(self, symbols)
+        data = await self._uta_get("/api/v3/position/current-position", {"category": "USDT-FUTURES"})
+        result = self._check(data)
+        rows = (result[0] if result else {}).get("list", []) or []
+        positions = []
+        for p in rows:
+            if float(p.get("total", 0) or 0) == 0:
+                continue
+            classic = {
+                "symbol": p.get("symbol", ""),
+                "holdSide": p.get("posSide"),
+                "total": p.get("total"),
+                "openPriceAvg": p.get("avgPrice"),
+                "unrealizedPL": p.get("unrealisedPnl"),
+                "leverage": p.get("leverage"),
+                "liquidationPrice": p.get("liquidationPrice"),
+                "cTime": p.get("createdTime", 0),
+            }
+            positions.append(_parse_position(self.from_native(str(classic["symbol"])), classic))
+        if symbols is not None:
+            wanted = set(symbols)
+            positions = [p for p in positions if p.symbol in wanted]
+        return positions
+
+    def _uta_order_row(self, d: dict[str, Any]) -> dict[str, Any]:
+        """v3 order row -> the classic row shape the existing parsers read."""
+        st = d.get("orderStatus", "")
+        st = "live" if st == "new" else ("canceled" if (st == "cancelled" and self.market_type == "linear") else st)
+        size = d.get("qty")
+        if (
+            self.market_type == "spot"
+            and str(d.get("orderType", "")).lower() == "market"
+            and str(d.get("side", "")).lower() == "buy"
+        ):
+            size = d.get("amount") or size  # spot market buy is sized in quote coin
+        return {
+            **d,
+            "size": size,
+            "baseVolume": d.get("cumExecQty"),
+            "quoteVolume": d.get("cumExecValue"),
+            "status": st,
+            "state": st,
+            "cTime": d.get("createdTime", 0),
+        }
+
+    def _uta_parse_order(self, symbol: str, d: dict[str, Any]) -> Order:
+        row = self._uta_order_row(d)
+        return _parse_order_mix(symbol, row) if self.market_type == "linear" else _parse_order(symbol, row)
+
+    async def _uta_create_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: float | None = None,
+        *,
+        client_order_id: str | None = None,
+    ) -> Order:
+        native = self.to_native(symbol)
+        is_limit = order_type.lower() == "limit"
+        oid = client_order_id or ("q" + uuid.uuid4().hex[:31])  # docs: always send clientOid (^[.A-Za-z0-9:/_-]{1,32}$)
+        body: dict[str, Any] = {
+            "category": self._uta_category,
+            "symbol": native,
+            "qty": str(amount),
+            "side": side.lower(),
+            "orderType": "limit" if is_limit else "market",
+            "clientOid": oid,
+        }
+        if self.market_type == "linear":
+            body["marginMode"] = "crossed"
+        if is_limit:
+            body["timeInForce"] = "gtc"
+            if price is not None:
+                body["price"] = str(price)
+        try:
+            data = await self._uta_post("/api/v3/trade/place-order", body)
+            self._check(data)  # HTTP 200 + non-zero code raises here too
+        except (NetworkError, ExchangeError, AuthenticationError) as e:
+            code = str(getattr(e, "code", ""))
+            unknown = isinstance(e, NetworkError) or code in _UTA_UNKNOWN_CODES or (code.isdigit() and int(code) >= 500)
+            if not unknown or isinstance(e, DuplicateOrderError):
+                raise
+            # Result unknown: look the order up by clientOid, never resend.
+            found = await self._uta_lookup(oid)
+            if found is None:
+                raise
+            data = {"code": "00000", "data": {"orderId": found.get("orderId", ""), "clientOid": oid}}
+        r = self._check(data)
+        first = r[0] if r else {}
+        quote_amount = self.market_type == "spot" and body["orderType"] == "market" and side.lower() == "buy"
+        return Order(
+            id=first.get("orderId") or "",
+            client_order_id=first.get("clientOid") or oid,
+            symbol=symbol,
+            side=side.lower(),
+            type=order_type.lower(),
+            amount=0.0 if quote_amount else amount,
+            amount_exact=None if quote_amount or self.market_type != "spot" else Decimal(str(amount)),
+            amount_quote=Decimal(str(amount)) if quote_amount else None,
+            price=price,
+            raw=data,
+        )
+
+    async def _uta_lookup(self, client_oid: str) -> dict[str, Any] | None:
+        try:
+            data = await self._uta_get("/api/v3/trade/order-info", {"clientOid": client_oid})
+            r = self._check(data)
+        except PyCexError:
+            return None
+        return r[0] if r and isinstance(r[0], dict) and r[0].get("orderId") else None
+
+    async def _uta_cancel_order(self, order_id: str, symbol: str) -> Order:
+        data = await self._uta_post("/api/v3/trade/cancel-order", {"category": self._uta_category, "orderId": order_id})
+        r = self._check(data)
+        first = r[0] if r else {}
+        return Order(id=first.get("orderId", order_id), symbol=symbol, side="", type="", amount=0, raw=data)
+
+    async def _uta_fetch_order(self, order_id: str | None, symbol: str, *, client_order_id: str | None = None) -> Order:
+        if bool(order_id) == bool(client_order_id):
+            raise InvalidOrderError("Provide exactly one of order_id or client_order_id")
+        lookup = {"clientOid": client_order_id} if client_order_id else {"orderId": order_id}
+        data = await self._uta_get("/api/v3/trade/order-info", lookup)
+        r = self._check(data)
+        if not r:
+            return Order(id=order_id or "", symbol=symbol, side="", type="", amount=0)
+        return self._uta_parse_order(symbol, r[0])
+
+    async def _uta_open_orders(self, symbol: str | None = None) -> list[Order]:
+        params: dict[str, Any] = {"category": self._uta_category}
+        if symbol:
+            params["symbol"] = self.to_native(symbol)
+        data = await self._uta_get("/api/v3/trade/unfilled-orders", params)
+        result = self._check(data)
+        rows = (result[0] if result else {}).get("list", []) or []
+        return [self._uta_parse_order(self.from_native(o.get("symbol", "")), o) for o in rows]
+
+    async def _uta_my_trades(
+        self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
+    ) -> list[MyTrade]:
+        if symbol is None:
+            raise ValueError(f"bitget:{self.market_type} requires symbol for my trades")
+        native = self.to_native(symbol)
+        params: dict[str, Any] = {"category": self._uta_category}
+        if since is not None:
+            params["startTime"] = str(since)
+            # docs: startTime..endTime must not exceed 30 days
+            params["endTime"] = str(min(int(time.time() * 1000), since + 30 * 86_400_000))
+        if limit is not None:
+            params["limit"] = str(limit)
+        data = await self._uta_get("/api/v3/trade/fills", params)
+        result = self._check(data)
+        rows = (result[0] if result else {}).get("list", []) or []
+        out = []
+        for t in rows:
+            if t.get("symbol") != native:
+                continue  # v3 fills has no symbol filter
+            fee0 = (t.get("feeDetail") or [{}])[0] or {}
+            row = {
+                "tradeId": t.get("execId"),
+                "orderId": t.get("orderId"),
+                "side": t.get("side"),
+                "price": t.get("execPrice"),
+                "priceAvg": t.get("execPrice"),
+                "baseVolume": t.get("execQty"),
+                "size": t.get("execQty"),
+                "cTime": t.get("createdTime", 0),
+                "feeDetail": (
+                    [{"feeCoin": fee0.get("feeCoin"), "totalFee": fee0.get("fee")}]
+                    if self.market_type == "linear"
+                    else {"feeCoin": fee0.get("feeCoin"), "totalFee": fee0.get("fee")}
+                ),
+            }
+            out.append(
+                _parse_my_trade_mix(symbol, row) if self.market_type == "linear" else _parse_my_trade_spot(symbol, row)
+            )
+        return out
 
 
 # ── Parsers ──
@@ -840,21 +1103,23 @@ def _parse_order_mix(symbol: str, d: dict[str, Any]) -> Order:
 _AUTH_CODES = frozenset(
     {"40001", "40002", "40003", "40004", "40005", "40006", "40008", "40009", "40010", "40011", "40012", "40037"}
 )
-_INSUFFICIENT_BALANCE_CODES = frozenset({"40711", "40712", "40762", "43012"})
-_ORDER_NOT_FOUND_CODES = frozenset({"40109", "40768", "43001"})
+_INSUFFICIENT_BALANCE_CODES = frozenset({"40711", "40712", "40762", "43012", "25202", "25203"})  # 252xx: UTA
+_ORDER_NOT_FOUND_CODES = frozenset({"40109", "40768", "43001", "25204", "60050"})  # 25204/60050: UTA
 _RATE_LIMIT_CODES = frozenset({"1001"})
 # Duplicate client order id, all in the same Error Code table (https://bitgetlimited.github.io/apidoc/en/spot/):
 # 40786 "Duplicate clientOid" (place-order), 40708 "client_oid duplicate", 43118 "clientOrderId duplicate"
 # (also the spot place-order "Duplicate clientOrderId Response" example), 45034 "clientOid duplicate",
 # 50060 "Duplicated clientOid".
-_DUPLICATE_ORDER_CODES = frozenset({"40786", "40708", "43118", "45034", "50060"})
+_DUPLICATE_ORDER_CODES = frozenset({"40786", "40708", "43118", "45034", "50060", "25212"})  # 25212: UTA
 
 
 def _map_error(code: str, msg: str) -> PyCexError:
     if code in _INSUFFICIENT_BALANCE_CODES:
         return InsufficientBalanceError(msg, code=code, exchange="bitget")
     if code in _AUTH_CODES:
-        return AuthenticationError(msg)
+        auth_err = AuthenticationError(msg)
+        auth_err.code = code  # type: ignore[attr-defined]  # lets the UTA place-order path see 40010 ("look it up, don't resend")
+        return auth_err
     if code in _ORDER_NOT_FOUND_CODES:
         return OrderNotFoundError(msg, code=code, exchange="bitget")
     if code in _RATE_LIMIT_CODES:
