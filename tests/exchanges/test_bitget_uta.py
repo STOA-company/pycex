@@ -453,14 +453,16 @@ async def test_unknown_outcome_never_resends(httpx_mock: HTTPXMock, script: list
     assert len([r for r in fake.seen if r.url.path.endswith("place-order")]) - n_before == 1
 
 
-async def test_insufficient_balance_code_not_resent(httpx_mock: HTTPXMock) -> None:
+@pytest.mark.parametrize("code", ["25202", "25203"])
+async def test_insufficient_balance_code_not_resent(httpx_mock: HTTPXMock, code: str) -> None:
     fake = Fake("uta")
     httpx_mock.add_callback(fake, is_reusable=True)
     ex = Bitget("key", "sec", "pp", market_type="linear")
     await ex.fetch_balance()
-    fake.place_script = [("25202", 400)]
-    with pytest.raises(InsufficientBalanceError):
+    fake.place_script = [(code, 400)]
+    with pytest.raises(InsufficientBalanceError) as ei:
         await ex.create_order("BTC/USDT:USDT", "buy", "market", 1.0)
+    assert ei.value.code == code  # D6477: pycex 는 줄여 다시 없음 — 분류까지만, 줄여 다시는 트레이더가 한다
     assert len([r for r in fake.seen if r.url.path.endswith("place-order")]) == 1
 
 
