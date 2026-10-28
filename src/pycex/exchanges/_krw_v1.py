@@ -225,7 +225,9 @@ def map_krw_error(
     if "insufficient_funds" in name:
         return InsufficientBalanceError(message, code=name, exchange=exchange)
     if name in auth_names:
-        return AuthenticationError(message)
+        # code = error.name (e.g. Upbit ``no_authorization_ip``, 401) so callers can tell an
+        # IP-allowlist rejection from a bad key: https://docs.upbit.com/kr/reference/rest-api-guide
+        return AuthenticationError(message, code=name, exchange=exchange)
     if name == "order_not_found":
         return OrderNotFoundError(message, code=name, exchange=exchange)
     if name in duplicate_order_names:
