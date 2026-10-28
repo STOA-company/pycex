@@ -20,7 +20,17 @@ class PyCexError(Exception):
 
 
 class AuthenticationError(PyCexError):
-    """Invalid or missing API credentials."""
+    """Invalid or missing API credentials.
+
+    ``code`` is the exchange's symbolic/numeric error name when it gave one
+    (same attribute ``ExchangeError`` carries); ``None`` when the venue reports
+    a key rejection without a code.
+    """
+
+    def __init__(self, message: str = "", *, code: str | int | None = None, exchange: str = "") -> None:
+        self.code = code
+        self.exchange = exchange
+        super().__init__(message)
 
 
 class ExchangeError(PyCexError):
