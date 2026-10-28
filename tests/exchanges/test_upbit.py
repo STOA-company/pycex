@@ -287,6 +287,22 @@ def test_map_error(name: str, expected_type: type[Exception]) -> None:
     assert isinstance(exc, expected_type)
 
 
+def test_map_error_no_authorization_ip_carries_code() -> None:
+    """Error table: https://docs.upbit.com/kr/reference/rest-api-guide (401 no_authorization_ip)."""
+    exc = _map_error(401, {"error": {"name": "no_authorization_ip", "message": "denied"}})
+    assert isinstance(exc, AuthenticationError)
+    assert exc.code == "no_authorization_ip"
+    assert exc.exchange == "upbit"
+    assert str(exc) == "denied"
+
+
+@pytest.mark.parametrize("name", ["invalid_query_payload", "jwt_verification", "expired_access_key"])
+def test_map_error_auth_names_carry_code(name: str) -> None:
+    exc = _map_error(401, {"error": {"name": name, "message": "m"}})
+    assert isinstance(exc, AuthenticationError)
+    assert exc.code == name
+
+
 def test_map_error_int_name_is_not_a_crash() -> None:
     """Upbit returns an **int** ``name`` for its 404 envelope (live probe 2026-08-30:
     ``GET /v1/ticker?markets=KRW-NOPE`` -> HTTP 404
