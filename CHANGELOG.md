@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-28
+
+### Fixed
+
+- KRW exchanges (Upbit, Bithumb): `AuthenticationError.code` = the exchange's `error.name`
+  (e.g. Upbit `no_authorization_ip`), so callers can tell an IP-allowlist rejection from a
+  bad key. `AuthenticationError` now takes the same optional `code`/`exchange` as
+  `ExchangeError`; `message` is unchanged. Error table:
+  https://docs.upbit.com/kr/reference/rest-api-guide
+
 ## [0.4.5] - 2026-09-27
 
 ### Added
