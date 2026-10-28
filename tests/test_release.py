@@ -37,7 +37,7 @@ def test_changelog_section_is_not_empty() -> None:
     """우회 1 — 제목만 있는 빈 릴리스 노트를 «적었다»고 하지 않는다."""
     text = (ROOT / "CHANGELOG.md").read_text()
     section = text.split(f"## [{VERSION}]", 1)[1].split("\n## [", 1)[0]
-    assert len(section.strip().splitlines()) > 5
+    assert len(section.strip().splitlines()) > 10
     assert any(h in section for h in ("### Added", "### Changed", "### Fixed", "### Removed"))
     released = text.split("## [0.3.0]", 1)[1].split("\n## [", 1)[0]
     assert "### Added" in released and "### Fixed" in released

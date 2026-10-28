@@ -11,11 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- KRW exchanges (Upbit, Bithumb): `AuthenticationError.code` = the exchange's `error.name`
-  (e.g. Upbit `no_authorization_ip`), so callers can tell an IP-allowlist rejection from a
-  bad key. `AuthenticationError` now takes the same optional `code`/`exchange` as
-  `ExchangeError`; `message` is unchanged. Error table:
-  https://docs.upbit.com/kr/reference/rest-api-guide
+- Upbit and Bithumb: authentication failures now carry `code` = the response's `error.name`
+  (e.g. `no_authorization_ip`, `NotAllowIP`, `jwt_verification`, `expired_access_key`).
+  Before, `map_krw_error` dropped the name and raised `AuthenticationError(message)` only,
+  so callers could not tell an IP-allowlist rejection from a bad key.
+
+### Changed
+
+- `AuthenticationError` accepts keyword-only `code` and `exchange` (same as `ExchangeError`);
+  both default to empty (`None` / `""`), so existing positional `AuthenticationError(msg)`
+  calls keep working.
+
+### Compatibility
+
+- `message` is unchanged; no existing field or call signature is removed. Backward compatible.
+
+### Docs
+
+- Official error tables: https://docs.upbit.com/kr/reference/rest-api-guide (Upbit),
+  https://apidocs.bithumb.com/docs/api-주요-에러-코드 (Bithumb).
+
+### Tests
+
+- Four new Upbit tests: `no_authorization_ip` carries code/exchange/message, and
+  `invalid_query_payload`, `jwt_verification`, `expired_access_key` each carry their name as `code`.
 
 ## [0.4.5] - 2026-09-27
 
