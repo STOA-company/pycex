@@ -53,7 +53,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from pycex.auth import bybit_headers
-from pycex.base import BaseExchange
+from pycex.base import BaseExchange, _make_sync
 from pycex.constants import BYBIT_BASE, BYBIT_REFERRAL_CODE, BYBIT_TESTNET, CANDLE_VENUES, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
@@ -476,6 +476,49 @@ class Bybit(BaseExchange):
             params["cursor"] = cursor
         raise ExchangeError("bybit: position snapshot did not terminate", exchange="bybit")
 
+    async def _paged_rows(self, path: str, params: dict[str, Any], what: str) -> list[dict[str, Any]]:
+        """All pages of a Bybit v5 ``list`` endpoint. A failed/malformed page raises — never "empty"."""
+        params = dict(params)
+        rows: list[dict[str, Any]] = []
+        for _ in range(50):
+            async with self._rate_limiter.request("query", group="private"):
+                full_path, headers = self._signed_get_request(path, params)
+                data = await self._http.get(full_path, headers=headers)
+            result = self._check(data)
+            page = result.get("list") if isinstance(result, dict) else None
+            if not isinstance(page, list) or not all(isinstance(r, dict) for r in page):
+                raise ExchangeError(f"bybit: incomplete {what} snapshot", exchange="bybit")
+            rows.extend(page)
+            cursor = result.get("nextPageCursor")
+            if not cursor:
+                return rows
+            params["cursor"] = cursor
+        raise ExchangeError(f"bybit: {what} snapshot did not terminate", exchange="bybit")
+
+    async def fetch_other_account_exposure(self) -> dict[str, list[dict[str, Any]]]:
+        """Open positions (``size != 0``) and open orders the USDT-linear reads do **not** cover: USDC linear
+        (perpetual + futures, ``settleCoin=USDC``) and inverse (``category=inverse``, no filter). Raw venue rows,
+        keyed ``positions``/``orders``. Any failed or malformed page raises — it never means "none"."""
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: account exposure requires market_type='linear'")
+        scopes: list[dict[str, Any]] = [
+            {"category": "linear", "settleCoin": "USDC"},
+            {"category": "inverse"},
+        ]
+        positions: list[dict[str, Any]] = []
+        orders: list[dict[str, Any]] = []
+        for scope in scopes:
+            for r in await self._paged_rows("/v5/position/list", {**scope, "limit": 200}, "position"):
+                size = Decimal(str(r.get("size") or 0))
+                if not size.is_finite():
+                    raise ExchangeError("bybit: position size is not a number", exchange="bybit")
+                if size != 0:
+                    positions.append(r)
+            orders.extend(await self._paged_rows("/v5/order/realtime", {**scope, "limit": 50}, "open-order"))
+        return {"positions": positions, "orders": orders}
+
+    fetch_other_account_exposure_sync = _make_sync("fetch_other_account_exposure")
+
     async def fetch_positions(self, symbols: list[str] | None = None) -> list[Position]:
         """Open linear positions (``size != 0``). ``margin_mode`` comes from the account-level mode (a unified
         account's per-position ``tradeMode`` is not authoritative); ``None`` when it cannot be told. Any failed
@@ -698,12 +741,29 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market | None:
     )
 
 
+def _float_or_none(value: Any) -> float | None:
+    """Empty string / missing / None -> ``None`` ("unknown"); a malformed non-empty value still raises."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return float(value)
+
+
 def _parse_balance(result: dict[str, Any], raw: dict[str, Any]) -> Balance:
     entries = []
     for account in result.get("list", []):
         for coin in account.get("coin", []):
-            free = float(coin.get("availableToWithdraw", 0))
-            locked = float(coin.get("locked", 0))
+            locked = _float_or_none(coin.get("locked")) or 0.0
+            # UNIFIED accounts return ``availableToWithdraw`` as an empty string since 2025-01 (Bybit API
+            # announcement). Empty/missing = unknown, not an error: fall back to ``walletBalance - locked`` and,
+            # when that is unknown too, skip the free part (the row still shows if ``locked`` > 0).
+            free = _float_or_none(coin.get("availableToWithdraw"))
+            if free is None:
+                wallet = _float_or_none(coin.get("walletBalance"))
+                free = None if wallet is None else max(0.0, wallet - locked)
+            if free is None:
+                if locked > 0:
+                    entries.append(BalanceEntry(asset=coin["coin"], free=0.0, locked=locked))
+                continue
             if free > 0 or locked > 0:
                 entries.append(BalanceEntry(asset=coin["coin"], free=free, locked=locked))
     return Balance(assets=entries, raw=raw)

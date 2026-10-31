@@ -320,3 +320,37 @@ async def test_duplicate_order_link_id_and_rate_limit_errors(httpx_mock: HTTPXMo
     with pytest.raises(RateLimitError):
         await ex.create_order(SYM, "buy", "limit", 0.1, 60000, client_order_id="q-def")
     await ex.close()
+
+
+def _page(rows: list[dict], cursor: str = "") -> dict:
+    return {"retCode": 0, "retMsg": "OK", "result": {"list": rows, "nextPageCursor": cursor}}
+
+
+async def test_other_account_exposure_reads_usdc_and_inverse(httpx_mock: HTTPXMock) -> None:
+    # position(USDC), order(USDC), position(inverse), order(inverse) — in that order
+    httpx_mock.add_response(json=_page([{"symbol": "BTCPERP", "size": "0.1"}, {"symbol": "ETHPERP", "size": "0"}]))
+    httpx_mock.add_response(json=_page([{"orderId": "o1", "symbol": "BTCPERP"}]))
+    httpx_mock.add_response(json=_page([{"symbol": "BTCUSD", "size": "5"}]))
+    httpx_mock.add_response(json=_page([]))
+    ex = Bybit(api_key="k", secret="s", market_type="linear")
+    out = await ex.fetch_other_account_exposure()
+    assert [r["symbol"] for r in out["positions"]] == ["BTCPERP", "BTCUSD"]
+    assert [r["orderId"] for r in out["orders"]] == ["o1"]
+    reqs = httpx_mock.get_requests()
+    assert [(_q(r)["category"], _q(r).get("settleCoin")) for r in reqs] == [
+        ("linear", "USDC"),
+        ("linear", "USDC"),
+        ("inverse", None),
+        ("inverse", None),
+    ]
+    await ex.close()
+
+
+async def test_other_account_exposure_failed_read_raises(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=_page([]))
+    httpx_mock.add_response(json=_page([]))
+    httpx_mock.add_response(json={"retCode": 10016, "retMsg": "Server Error", "result": {}})
+    ex = Bybit(api_key="k", secret="s", market_type="linear")
+    with pytest.raises(Exception):  # noqa: B017 - any failure must surface, never "none"
+        await ex.fetch_other_account_exposure()
+    await ex.close()

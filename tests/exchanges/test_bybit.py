@@ -670,3 +670,39 @@ async def test_candles_page_is_sorted_ascending(httpx_mock: HTTPXMock) -> None:
     assert [c.timestamp for c in candles] == [1787875200000, 1787961600000, 1788048000000]
     assert [c.close for c in candles] == [1.0, 2.0, 3.0]
     await ex.close()
+
+
+def _uta_coin(**over: str) -> dict[str, str]:
+    """Real UNIFIED wallet-balance coin row: ``availableToWithdraw`` is always an empty string (2025-01)."""
+    return {
+        "coin": "USDT",
+        "walletBalance": "100",
+        "equity": "100",
+        "locked": "0",
+        "availableToWithdraw": "",
+        "borrowAmount": "0",
+        "spotBorrow": "0",
+        **over,
+    }
+
+
+async def test_fetch_balance_uta_empty_available_to_withdraw_does_not_raise(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        json={"retCode": 0, "retMsg": "OK", "result": {"list": [{"coin": [_uta_coin()]}]}},
+    )
+    ex = Bybit(api_key="k", secret=SECRET)
+    bal = await ex.fetch_balance()
+    assert [(e.asset, e.free, e.locked) for e in bal.assets] == [("USDT", 100.0, 0.0)]
+    coin = bal.raw["result"]["list"][0]["coin"][0]
+    assert coin["borrowAmount"] == "0" and coin["spotBorrow"] == "0"
+    await ex.close()
+
+
+async def test_fetch_balance_unknown_free_is_skipped_not_raised(httpx_mock: HTTPXMock) -> None:
+    rows = [_uta_coin(walletBalance="", equity=""), _uta_coin(coin="BTC", locked="", walletBalance="")]
+    rows[1].pop("availableToWithdraw")
+    httpx_mock.add_response(json={"retCode": 0, "retMsg": "OK", "result": {"list": [{"coin": rows}]}})
+    ex = Bybit(api_key="k", secret=SECRET)
+    bal = await ex.fetch_balance()
+    assert bal.assets == []
+    await ex.close()
