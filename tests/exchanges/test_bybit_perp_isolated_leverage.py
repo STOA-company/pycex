@@ -5,8 +5,6 @@ Request shapes follow the official docs:
   https://bybit-exchange.github.io/docs/v5/position/leverage
 - POST /v5/account/set-margin-mode (unified account, account-wide; result.reasons on refusal)
   https://bybit-exchange.github.io/docs/v5/account/set-margin-mode
-- POST /v5/position/switch-isolated (classic account; 110026 "not modified")
-  https://bybit-exchange.github.io/docs/v5/position/cross-isolate
 - GET /v5/position/list, GET /v5/account/info, POST /v5/order/create reduceOnly + orderLinkId
 - retCode 10006 rate limit, 10010 IP not allowed, 110072 duplicate orderLinkId
 """
@@ -158,41 +156,56 @@ async def test_margin_mode_refusal_reasons_raise(httpx_mock: HTTPXMock) -> None:
     await ex.close()
 
 
-async def test_margin_mode_portfolio_account_not_supported(httpx_mock: HTTPXMock) -> None:
+async def test_margin_mode_portfolio_account_switch_is_account_wide_request(httpx_mock: HTTPXMock) -> None:
+    """PORTFOLIO_MARGIN -> ISOLATED_MARGIN is a valid set-margin-mode value; the caller checks the account first."""
     httpx_mock.add_response(json=_info("PORTFOLIO_MARGIN", 4))
+    httpx_mock.add_response(json=_ok({"reasons": []}))
+    ex = _ex()
+    await ex.set_margin_mode(SYM, "isolated")
+    req = httpx_mock.get_requests()[-1]
+    assert req.url.path == "/v5/account/set-margin-mode"
+    assert json_lib.loads(req.content) == {"setMarginMode": "ISOLATED_MARGIN"}
+    await ex.close()
+
+
+async def test_set_margin_mode_does_not_require_a_flat_account(httpx_mock: HTTPXMock) -> None:
+    """Bybit documents no 'no open perpetual position' condition; set_margin_mode sends the request regardless of
+    other symbols' positions (it never reads them)."""
+    httpx_mock.add_response(json=_info("REGULAR_MARGIN"))
+    httpx_mock.add_response(json=_ok({"reasons": []}))
+    ex = _ex()
+    await ex.set_margin_mode(SYM, "isolated")
+    assert [r.url.path for r in httpx_mock.get_requests()] == ["/v5/account/info", "/v5/account/set-margin-mode"]
+    await ex.close()
+
+
+async def test_classic_account_is_refused_not_guessed(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json=_info("REGULAR_MARGIN", 1))
     ex = _ex()
     with pytest.raises(NotSupportedError):
-        await ex.set_margin_mode(SYM, "isolated")
+        await ex.set_margin_mode(SYM, "isolated", lever=3)
+    assert [r.url.path for r in httpx_mock.get_requests()] == ["/v5/account/info"]
     await ex.close()
 
 
-async def test_classic_account_uses_switch_isolated_and_needs_lever(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(json=_info("REGULAR_MARGIN", 1))
-    httpx_mock.add_response(json=_ok({}))
+async def test_fetch_open_orders_without_symbol_reads_all_usdt_pages(httpx_mock: HTTPXMock) -> None:
+    row = {"orderId": "1", "symbol": "ETHUSDT", "side": "Buy", "orderType": "Limit", "qty": "1", "price": "1",
+           "cumExecQty": "0", "orderStatus": "New", "createdTime": "1"}
+    httpx_mock.add_response(json=_ok({"list": [row], "nextPageCursor": "c2"}))
+    httpx_mock.add_response(json=_ok({"list": [dict(row, orderId="2")], "nextPageCursor": ""}))
     ex = _ex()
-    await ex.set_margin_mode(SYM, "isolated", lever=3)
-    req = httpx_mock.get_requests()[-1]
-    assert req.url.path == "/v5/position/switch-isolated"
-    assert json_lib.loads(req.content) == {
-        "category": "linear",
-        "symbol": "BTCUSDT",
-        "tradeMode": 1,
-        "buyLeverage": "3",
-        "sellLeverage": "3",
-    }
+    orders = await ex.fetch_open_orders()
+    assert [o.id for o in orders] == ["1", "2"]
+    reqs = httpx_mock.get_requests()
+    assert "settleCoin=USDT" in str(reqs[0].url) and "cursor=c2" in str(reqs[1].url)
     await ex.close()
 
 
-async def test_classic_switch_110026_is_success_and_missing_lever_refused(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(json=_info("REGULAR_MARGIN", 1))
-    httpx_mock.add_response(
-        json={"retCode": 110026, "retMsg": "Cross/isolated margin mode is not modified", "result": {}}
-    )
-    httpx_mock.add_response(json=_info("REGULAR_MARGIN", 1))
+async def test_fetch_open_orders_read_failure_never_means_no_orders(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(json={"retCode": 10010, "retMsg": "Unmatched IP", "result": {}})
     ex = _ex()
-    assert await ex.set_margin_mode(SYM, "isolated", lever=3) == {}
-    with pytest.raises(InvalidOrderError):
-        await ex.set_margin_mode(SYM, "isolated")
+    with pytest.raises(ExchangeError):
+        await ex.fetch_open_orders()
     await ex.close()
 
 
