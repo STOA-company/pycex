@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bybit v5 USDT linear: isolated margin + leverage control. `set_leverage` (buyLeverage=sellLeverage; retCode `110043`
+  = already that value = success; non-positive/NaN rejected before any request), `set_margin_mode` (unified account:
+  `/v5/account/set-margin-mode`, account-wide, refusal `reasons` raised; classic: `/v5/position/switch-isolated`,
+  `110026` = success), `fetch_leverage` (`/v5/position/list` + `/v5/account/info`), `fetch_account_config`,
+  `fetch_positions` (paged, read failure never means flat), `create_order(reduce_only=True)` (`reduceOnly`; refused on spot).
 - Binance USDT-M and Bitget linear: isolated margin + leverage control. Binance `set_leverage` (marginType
   then leverage; `-4046` already-in-mode = success; non-integer leverage rejected), `set_margin_type`,
   `fetch_leverage` (positionRisk), `create_order(reduce_only=True)`. Bitget `set_margin_mode`, `set_leverage`,
