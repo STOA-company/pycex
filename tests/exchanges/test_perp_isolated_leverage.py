@@ -323,3 +323,30 @@ async def test_bitget_uta_key_isolated_refused_and_reduce_only_yes(httpx_mock: H
     body = json_lib.loads(httpx_mock.get_requests()[-1].content)
     assert body["reduceOnly"] == "yes" and body["marginMode"] == "crossed"
     await ex.close()
+
+
+async def test_bitget_ensure_margin_mode_switches_only_when_different(httpx_mock: HTTPXMock) -> None:
+    acct = {"marginMode": "crossed", "crossedMarginLeverage": 20, "isolatedLongLever": 3, "isolatedShortLever": 3}
+    httpx_mock.add_response(json={"code": "00000", "data": acct})
+    httpx_mock.add_response(json={"code": "00000", "data": {"marginMode": "isolated"}})
+    httpx_mock.add_response(json={"code": "00000", "data": {"leverage": "3"}})
+    ex = _bg()
+    await ex.set_leverage(SYM, 3, "isolated", ensure_margin_mode=True)
+    paths = [r.url.path for r in httpx_mock.get_requests()]
+    assert paths == [
+        "/api/v2/mix/account/account",
+        "/api/v2/mix/account/set-margin-mode",
+        "/api/v2/mix/account/set-leverage",
+    ]
+    await ex.close()
+
+
+async def test_bitget_ensure_margin_mode_skips_when_already_isolated(httpx_mock: HTTPXMock) -> None:
+    acct = {"marginMode": "isolated", "isolatedLongLever": 3, "isolatedShortLever": 3}
+    httpx_mock.add_response(json={"code": "00000", "data": acct})
+    httpx_mock.add_response(json={"code": "00000", "data": {"leverage": "3"}})
+    ex = _bg()
+    await ex.set_leverage(SYM, 3, "isolated", ensure_margin_mode=True)
+    assert [r.url.path for r in httpx_mock.get_requests()][-1] == "/api/v2/mix/account/set-leverage"
+    assert len(httpx_mock.get_requests()) == 2
+    await ex.close()

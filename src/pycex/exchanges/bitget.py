@@ -634,17 +634,25 @@ class Bitget(BaseExchange):
         return result[0] if result and isinstance(result[0], dict) else {}
 
     async def set_leverage(
-        self, symbol: str, lever: float, mgn_mode: str = "cross", *, hold_side: str | None = None
+        self,
+        symbol: str,
+        lever: float,
+        mgn_mode: str = "cross",
+        *,
+        hold_side: str | None = None,
+        ensure_margin_mode: bool = False,
     ) -> dict[str, Any]:
         """``POST /api/v2/mix/account/set-leverage``.
 
         ``mgn_mode`` only selects what is validated here (Bitget keeps one leverage per margin mode and
         applies it to the symbol's *current* mode — call :meth:`set_margin_mode` first). ``hold_side``
-        ("long"/"short") is only for isolated hedge-mode positions. No risk cap lives here.
+        ("long"/"short") is only for isolated hedge-mode positions. ``ensure_margin_mode=True`` first reads
+        the symbol's margin mode and calls :meth:`set_margin_mode` only when it differs (so an
+        already-isolated symbol sends no mode change). No risk cap lives here.
         """
         if self.market_type != "linear":
             raise NotSupportedError("bitget: leverage applies to market_type='linear' only")
-        _bitget_margin_mode(mgn_mode)
+        wire_mode = _bitget_margin_mode(mgn_mode)
         if not math.isfinite(lever) or lever <= 0:
             raise InvalidOrderError(
                 f"bitget: lever must be a finite positive number, got {lever!r}", code="lever", exchange="bitget"
@@ -661,6 +669,10 @@ class Bitget(BaseExchange):
                     "bitget: hold_side must be 'long' or 'short'", code="holdSide", exchange="bitget"
                 )
             body["holdSide"] = hold_side
+        if ensure_margin_mode:
+            current = (await self.fetch_leverage(symbol, mgn_mode))[0]["mgnMode"]
+            if current != wire_mode:
+                await self.set_margin_mode(symbol, mgn_mode)
         path = self._p("setLeverage")
         body_str = json.dumps(body)
         async with self._rate_limiter.request("order"):
