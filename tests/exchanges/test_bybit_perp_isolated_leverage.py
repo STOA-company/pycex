@@ -189,8 +189,17 @@ async def test_classic_account_is_refused_not_guessed(httpx_mock: HTTPXMock) -> 
 
 
 async def test_fetch_open_orders_without_symbol_reads_all_usdt_pages(httpx_mock: HTTPXMock) -> None:
-    row = {"orderId": "1", "symbol": "ETHUSDT", "side": "Buy", "orderType": "Limit", "qty": "1", "price": "1",
-           "cumExecQty": "0", "orderStatus": "New", "createdTime": "1"}
+    row = {
+        "orderId": "1",
+        "symbol": "ETHUSDT",
+        "side": "Buy",
+        "orderType": "Limit",
+        "qty": "1",
+        "price": "1",
+        "cumExecQty": "0",
+        "orderStatus": "New",
+        "createdTime": "1",
+    }
     httpx_mock.add_response(json=_ok({"list": [row], "nextPageCursor": "c2"}))
     httpx_mock.add_response(json=_ok({"list": [dict(row, orderId="2")], "nextPageCursor": ""}))
     ex = _ex()
