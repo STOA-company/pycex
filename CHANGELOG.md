@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Binance USDT-M and Bitget linear: isolated margin + leverage control. Binance `set_leverage` (marginType
+  then leverage; `-4046` already-in-mode = success; non-integer leverage rejected), `set_margin_type`,
+  `fetch_leverage` (positionRisk), `create_order(reduce_only=True)`. Bitget `set_margin_mode`, `set_leverage`,
+  `fetch_leverage`, `create_order(reduce_only=, margin_mode=)` (defaults unchanged: crossed, no reduce-only).
+
 ## [0.4.6] - 2026-10-28
 
 ### Fixed
