@@ -33,14 +33,19 @@ Doc verification (2026-08-30), via ``WebFetch`` against the live docs:
   ``110001``/``170213`` (order does not exist, UTA vs. spot-trade variants),
   ``10006`` (rate limit) — used below in ``_map_error``.
 
-``fetch_positions``/``fetch_funding_rate`` are intentionally left at the
-``BaseExchange`` default (``NotSupportedError``) — out of phase-1 scope for
-this adapter, matching the brief.
+``fetch_funding_rate`` is left at the ``BaseExchange`` default
+(``NotSupportedError``). Linear ``fetch_positions``/``fetch_leverage``/
+``set_leverage``/``set_margin_mode``/``fetch_account_config`` and
+``create_order(reduce_only=)`` are the isolated-perp surface (docs: ``position/set-leverage``
+110043 = already that value, ``account/set-margin-mode``, ``position/switch-isolated``
+110026 = already in mode, ``position/list``, ``account/info``; retCode ``10006`` =
+rate limit, ``10010`` = IP not in the key's allow-list, ``110072`` = duplicate orderLinkId).
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Sequence
 from decimal import Decimal
@@ -48,7 +53,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from pycex.auth import bybit_headers
-from pycex.base import BaseExchange
+from pycex.base import BaseExchange, _make_sync
 from pycex.constants import BYBIT_BASE, BYBIT_REFERRAL_CODE, BYBIT_TESTNET, CANDLE_VENUES, QUOTE_SUFFIXES
 from pycex.exceptions import (
     AuthenticationError,
@@ -56,6 +61,7 @@ from pycex.exceptions import (
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
+    NotSupportedError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -68,6 +74,7 @@ from pycex.models.market import Market, parse_listing_time, select_markets
 from pycex.models.mytrade import MyTrade
 from pycex.models.order import Order
 from pycex.models.orderbook import OrderBook, OrderBookEntry
+from pycex.models.position import Position
 from pycex.models.ticker import Ticker
 from pycex.models.trade import Trade
 from pycex.ratelimit import ExchangeRateLimiter
@@ -283,9 +290,20 @@ class Bybit(BaseExchange):
         *,
         client_order_id: str | None = None,
         market_unit: str | None = None,
+        reduce_only: bool = False,
     ) -> Order:
+        """``reduce_only`` (linear, one-way position mode) sends ``reduceOnly=true``
+        (POST /v5/order/create, https://bybit-exchange.github.io/docs/v5/order/create-order);
+        spot has no position to reduce, so it is refused. ``client_order_id`` is ``orderLinkId``
+        (unique per account: a repeat is rejected, retCode 110072 -> ``DuplicateOrderError``)."""
         if client_order_id is not None:
             _validated_client_order_id(client_order_id)
+        if reduce_only and self.market_type != "linear":
+            raise InvalidOrderError(
+                "bybit: reduce_only applies to linear perpetuals (market_type='linear') only",
+                code="reduceOnly",
+                exchange="bybit",
+            )
         native = self.to_native(symbol)
         body: dict[str, Any] = {
             "category": self._category,
@@ -305,6 +323,8 @@ class Bybit(BaseExchange):
         if price is not None:
             body["price"] = str(price)
             body["timeInForce"] = "GTC"
+        if reduce_only:
+            body["reduceOnly"] = True
         if client_order_id is not None:
             body["orderLinkId"] = client_order_id
         async with self._rate_limiter.request("order"):
@@ -361,16 +381,29 @@ class Bybit(BaseExchange):
         raise OrderNotFoundError("bybit: order not found", exchange="bybit")
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[Order]:
+        """``GET /v5/order/realtime``. Without ``symbol`` on a linear market: **all** open USDT-settled orders of the
+        account (``settleCoin=USDT``, all pages). A failed or malformed page raises — it never means "no orders"."""
         params: dict[str, Any] = {"category": self._category}
         if symbol:
             params["symbol"] = self.to_native(symbol)
-        async with self._rate_limiter.request("query", group="private"):
-            full_path, headers = self._signed_get_request("/v5/order/realtime", params)
-            data = await self._http.get(full_path, headers=headers)
-        result = self._check(data)
-        return [
-            _parse_order(self.from_native(o.get("symbol", "")), o, self.market_type) for o in result.get("list", [])
-        ]
+        elif self.market_type == "linear":
+            params["settleCoin"] = "USDT"
+            params["limit"] = 50
+        rows: list[dict[str, Any]] = []
+        for _ in range(50):
+            async with self._rate_limiter.request("query", group="private"):
+                full_path, headers = self._signed_get_request("/v5/order/realtime", params)
+                data = await self._http.get(full_path, headers=headers)
+            result = self._check(data)
+            page = result.get("list", []) if isinstance(result, dict) else None
+            if not isinstance(page, list) or not all(isinstance(o, dict) for o in page):
+                raise ExchangeError("bybit: incomplete open-order snapshot", exchange="bybit")
+            rows.extend(page)
+            cursor = result.get("nextPageCursor")
+            if not cursor:
+                return [_parse_order(self.from_native(o.get("symbol", "")), o, self.market_type) for o in rows]
+            params["cursor"] = cursor
+        raise ExchangeError("bybit: open-order snapshot did not terminate", exchange="bybit")
 
     async def fetch_my_trades(
         self, symbol: str | None = None, *, since: int | None = None, limit: int | None = None
@@ -391,6 +424,223 @@ class Bybit(BaseExchange):
         if since is not None:
             trades = [t for t in trades if t.timestamp >= since]
         return trades
+
+    # ── Perpetual account settings (USDT linear) ──
+
+    async def _account_info(self) -> dict[str, Any]:
+        """``GET /v5/account/info`` — ``marginMode`` (``ISOLATED_MARGIN``/``REGULAR_MARGIN``/``PORTFOLIO_MARGIN``)
+        and ``unifiedMarginStatus`` (1 = classic, retired and refused; 3/4/5 = unified). Bybit's unified account keeps
+        the margin mode per **account** (not per symbol); a classic account keeps it per symbol."""
+        async with self._rate_limiter.request("query", group="private"):
+            full_path, headers = self._signed_get_request("/v5/account/info", {})
+            data = await self._http.get(full_path, headers=headers)
+        info = self._check(data)
+        if not isinstance(info, dict) or "marginMode" not in info:
+            raise ExchangeError("bybit: incomplete account info", exchange="bybit")
+        return info
+
+    async def fetch_account_config(self) -> dict[str, Any]:
+        """Account info plus ``mgnMode`` (``isolated``/``cross``/``portfolio``, ``None`` if unrecognised) normalised
+        from the unified account's ``marginMode``. Classic accounts (``unifiedMarginStatus`` 1) were retired by Bybit
+        (2025-11, forced upgrade to UTA): they are refused rather than guessed at."""
+        info = dict(await self._account_info())
+        if str(info.get("unifiedMarginStatus")) == "1":
+            raise NotSupportedError("bybit: classic accounts are retired (UTA only)")
+        info["mgnMode"] = {
+            "ISOLATED_MARGIN": "isolated",
+            "REGULAR_MARGIN": "cross",
+            "PORTFOLIO_MARGIN": "portfolio",
+        }.get(str(info.get("marginMode")))
+        return info
+
+    async def _position_rows(self, symbol: str | None) -> list[dict[str, Any]]:
+        """``GET /v5/position/list`` (category=linear; ``symbol`` or ``settleCoin=USDT``), all pages."""
+        params: dict[str, Any] = {"category": "linear", "limit": 200}
+        if symbol is not None:
+            params["symbol"] = self.to_native(symbol)
+        else:
+            params["settleCoin"] = "USDT"
+        rows: list[dict[str, Any]] = []
+        for _ in range(50):
+            async with self._rate_limiter.request("query", group="private"):
+                full_path, headers = self._signed_get_request("/v5/position/list", params)
+                data = await self._http.get(full_path, headers=headers)
+            result = self._check(data)
+            page = result.get("list") if isinstance(result, dict) else None
+            if not isinstance(page, list) or not all(isinstance(r, dict) for r in page):
+                raise ExchangeError("bybit: incomplete position snapshot", exchange="bybit")
+            rows.extend(page)
+            cursor = result.get("nextPageCursor")
+            if not cursor:
+                return rows
+            params["cursor"] = cursor
+        raise ExchangeError("bybit: position snapshot did not terminate", exchange="bybit")
+
+    async def _paged_rows(self, path: str, params: dict[str, Any], what: str) -> list[dict[str, Any]]:
+        """All pages of a Bybit v5 ``list`` endpoint. A failed/malformed page raises — never "empty"."""
+        params = dict(params)
+        rows: list[dict[str, Any]] = []
+        for _ in range(50):
+            async with self._rate_limiter.request("query", group="private"):
+                full_path, headers = self._signed_get_request(path, params)
+                data = await self._http.get(full_path, headers=headers)
+            result = self._check(data)
+            page = result.get("list") if isinstance(result, dict) else None
+            if not isinstance(page, list) or not all(isinstance(r, dict) for r in page):
+                raise ExchangeError(f"bybit: incomplete {what} snapshot", exchange="bybit")
+            rows.extend(page)
+            cursor = result.get("nextPageCursor")
+            if not cursor:
+                return rows
+            params["cursor"] = cursor
+        raise ExchangeError(f"bybit: {what} snapshot did not terminate", exchange="bybit")
+
+    async def fetch_other_account_exposure(self) -> dict[str, list[dict[str, Any]]]:
+        """Open positions (``size != 0``) and open orders the USDT-linear reads do **not** cover: USDC linear
+        (perpetual + futures, ``settleCoin=USDC``) and inverse (``category=inverse``, no filter). Raw venue rows,
+        keyed ``positions``/``orders``. Any failed or malformed page raises — it never means "none"."""
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: account exposure requires market_type='linear'")
+        scopes: list[dict[str, Any]] = [
+            {"category": "linear", "settleCoin": "USDC"},
+            {"category": "inverse"},
+        ]
+        positions: list[dict[str, Any]] = []
+        orders: list[dict[str, Any]] = []
+        for scope in scopes:
+            for r in await self._paged_rows("/v5/position/list", {**scope, "limit": 200}, "position"):
+                size = Decimal(str(r.get("size") or 0))
+                if not size.is_finite():
+                    raise ExchangeError("bybit: position size is not a number", exchange="bybit")
+                if size != 0:
+                    positions.append(r)
+            orders.extend(await self._paged_rows("/v5/order/realtime", {**scope, "limit": 50}, "open-order"))
+        return {"positions": positions, "orders": orders}
+
+    fetch_other_account_exposure_sync = _make_sync("fetch_other_account_exposure")
+
+    async def fetch_positions(self, symbols: list[str] | None = None) -> list[Position]:
+        """Open linear positions (``size != 0``). ``margin_mode`` comes from the account-level mode (a unified
+        account's per-position ``tradeMode`` is not authoritative); ``None`` when it cannot be told. Any failed
+        or malformed read raises — it never means "flat"."""
+        if self.market_type != "linear":
+            return await super().fetch_positions(symbols)
+        config = await self.fetch_account_config()
+        rows = await self._position_rows(None)
+        positions: list[Position] = []
+        for r in rows:
+            size = Decimal(str(r.get("size") or 0))
+            if not size.is_finite():
+                raise ExchangeError("bybit: incomplete position snapshot", exchange="bybit")
+            if size == 0:
+                continue
+            if r.get("side") not in ("Buy", "Sell"):
+                raise ExchangeError("bybit: position direction is unknown", exchange="bybit")
+            mode = config.get("mgnMode")  # account-level; position ``tradeMode`` is deprecated (always 0)
+            row = dict(r)
+            row["mgnMode"] = mode
+            positions.append(_parse_position(self.from_native(str(r.get("symbol", ""))), row, mode))
+        if symbols is not None:
+            wanted = set(symbols)
+            positions = [p for p in positions if p.symbol in wanted]
+        return positions
+
+    async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
+        """One row for the symbol: the venue ``/v5/position/list`` row plus ``mgnMode`` (``isolated``/``cross``/
+        ``portfolio``/``None``), ``lever`` (str) and ``posMode`` (``one_way_mode`` when the only row has
+        ``positionIdx`` 0, ``hedge_mode`` for idx 1+2). Works with or without an open position (Bybit returns
+        an empty-size row). A row in the other mode is returned as-is — the caller compares.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: leverage settings require market_type='linear'")
+        if mgn_mode not in ("isolated", "cross", "crossed"):
+            raise InvalidOrderError("bybit: unknown margin mode", code="marginMode", exchange="bybit")
+        config = await self.fetch_account_config()
+        rows = await self._position_rows(symbol)
+        idx = sorted(str(r.get("positionIdx")) for r in rows)
+        if idx == ["0"]:
+            pos_mode = "one_way_mode"
+        elif idx == ["1", "2"]:
+            pos_mode = "hedge_mode"
+        else:
+            raise ExchangeError("bybit: incomplete leverage snapshot", exchange="bybit")
+        row = dict(rows[0])
+        mode = config.get("mgnMode")  # account-level; position ``tradeMode`` is deprecated (always 0)
+        row["mgnMode"] = mode
+        row["posMode"] = pos_mode
+        row["lever"] = None if row.get("leverage") in (None, "") else str(row["leverage"])
+        return [row]
+
+    async def set_margin_mode(
+        self, symbol: str, mgn_mode: str = "isolated", *, lever: float | None = None
+    ) -> dict[str, Any]:
+        """Switch the **unified account's** margin mode: ``POST /v5/account/set-margin-mode``
+        (``ISOLATED_MARGIN``/``REGULAR_MARGIN``). ``symbol`` and ``lever`` are accepted for call-shape
+        compatibility only and are ignored — the request names no symbol.
+
+        🚨 **Account-wide.** Bybit changes the margin mode of the whole UTA (every linear symbol, other open
+        perpetual positions included; spot margin turns off under isolated). Bybit does *not* require the account
+        to be flat: its documented conditions for Cross -> Isolated are no options orders/positions, no spot
+        margin orders, sufficient margin and no borrowing (Bybit help: "Differences Between the Margin Modes
+        Under the UTA"). Refusals come back in ``result.reasons`` and are raised here. This method does not
+        check anything else — a caller that must not disturb other positions has to read the account first.
+        Already in the requested mode: no request. Classic accounts no longer exist (refused).
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: margin mode applies to market_type='linear' only")
+        if mgn_mode not in ("isolated", "cross", "crossed"):
+            raise InvalidOrderError(
+                f"bybit: mgn_mode must be 'cross' or 'isolated', got {mgn_mode!r}", code="marginMode", exchange="bybit"
+            )
+        isolated = mgn_mode == "isolated"
+        config = await self.fetch_account_config()
+        if config.get("mgnMode") == ("isolated" if isolated else "cross"):
+            return {}
+        if config.get("mgnMode") is None:
+            raise ExchangeError("bybit: account margin mode is unknown", code="marginMode", exchange="bybit")
+        body = {"setMarginMode": "ISOLATED_MARGIN" if isolated else "REGULAR_MARGIN"}
+        async with self._rate_limiter.request("order"):
+            body_str = json.dumps(body)
+            data = await self._http.post_raw(
+                "/v5/account/set-margin-mode", body=body_str, headers=self._auth_post_headers(body_str)
+            )
+        result = self._check(data)
+        reasons = result.get("reasons") if isinstance(result, dict) else None
+        if reasons:
+            raise ExchangeError(
+                f"bybit: margin mode change refused: {reasons!r}", code="setMarginMode", exchange="bybit"
+            )
+        return result if isinstance(result, dict) else {}
+
+    async def set_leverage(
+        self, symbol: str, lever: float, mgn_mode: str = "cross", *, ensure_margin_mode: bool = False
+    ) -> dict[str, Any]:
+        """``POST /v5/position/set-leverage`` (buyLeverage = sellLeverage, one-way). retCode ``110043``
+        ("leverage not modified" = already that value) is success. ``ensure_margin_mode=True`` first reads the
+        margin mode and calls :meth:`set_margin_mode` only when it differs. No risk cap lives here.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: leverage applies to market_type='linear' only")
+        lev = _bybit_leverage(lever)
+        if mgn_mode not in ("isolated", "cross", "crossed"):
+            raise InvalidOrderError("bybit: unknown margin mode", code="marginMode", exchange="bybit")
+        if ensure_margin_mode:
+            current = (await self.fetch_leverage(symbol, mgn_mode))[0]["mgnMode"]
+            if current != ("isolated" if mgn_mode == "isolated" else "cross"):
+                await self.set_margin_mode(symbol, mgn_mode, lever=lever)
+        body = {"category": "linear", "symbol": self.to_native(symbol), "buyLeverage": lev, "sellLeverage": lev}
+        try:
+            async with self._rate_limiter.request("order"):
+                body_str = json.dumps(body)
+                data = await self._http.post_raw(
+                    "/v5/position/set-leverage", body=body_str, headers=self._auth_post_headers(body_str)
+                )
+            result = self._check(data)
+        except ExchangeError as e:
+            if str(e.code) == "110043":
+                return {}
+            raise
+        return result if isinstance(result, dict) else {}
 
 
 # ── Parsers ──
@@ -491,12 +741,29 @@ def _parse_market(d: dict[str, Any], market_type: MarketType) -> Market | None:
     )
 
 
+def _float_or_none(value: Any) -> float | None:
+    """Empty string / missing / None -> ``None`` ("unknown"); a malformed non-empty value still raises."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return float(value)
+
+
 def _parse_balance(result: dict[str, Any], raw: dict[str, Any]) -> Balance:
     entries = []
     for account in result.get("list", []):
         for coin in account.get("coin", []):
-            free = float(coin.get("availableToWithdraw", 0))
-            locked = float(coin.get("locked", 0))
+            locked = _float_or_none(coin.get("locked")) or 0.0
+            # UNIFIED accounts return ``availableToWithdraw`` as an empty string since 2025-01 (Bybit API
+            # announcement). Empty/missing = unknown, not an error: fall back to ``walletBalance - locked`` and,
+            # when that is unknown too, skip the free part (the row still shows if ``locked`` > 0).
+            free = _float_or_none(coin.get("availableToWithdraw"))
+            if free is None:
+                wallet = _float_or_none(coin.get("walletBalance"))
+                free = None if wallet is None else max(0.0, wallet - locked)
+            if free is None:
+                if locked > 0:
+                    entries.append(BalanceEntry(asset=coin["coin"], free=0.0, locked=locked))
+                continue
             if free > 0 or locked > 0:
                 entries.append(BalanceEntry(asset=coin["coin"], free=free, locked=locked))
     return Balance(assets=entries, raw=raw)
@@ -539,6 +806,34 @@ def _parse_order(symbol: str, d: dict[str, Any], market_type: str = "spot") -> O
         filled=float(d.get("cumExecQty", 0)),
         status=d.get("orderStatus", ""),
         timestamp=int(d.get("createdTime", 0)),
+        raw=d,
+    )
+
+
+def _bybit_leverage(lever: float | None) -> str:
+    if lever is None or isinstance(lever, bool) or not math.isfinite(lever) or lever <= 0:
+        raise InvalidOrderError(
+            f"bybit: lever must be a finite positive number, got {lever!r}", code="leverage", exchange="bybit"
+        )
+    return str(int(lever)) if float(lever).is_integer() else str(lever)
+
+
+def _none_if_zero(v: Any) -> float | None:
+    f = float(v or 0)
+    return f if f else None
+
+
+def _parse_position(symbol: str, d: dict[str, Any], margin_mode: str | None) -> Position:
+    return Position(
+        symbol=symbol,
+        side="long" if d.get("side") == "Buy" else "short",
+        amount=abs(float(d.get("size") or 0)),
+        entry_price=_none_if_zero(d.get("avgPrice")),
+        unrealized_pnl=float(d.get("unrealisedPnl") or 0),
+        leverage=_none_if_zero(d.get("leverage")),
+        liquidation_price=_none_if_zero(d.get("liqPrice")),
+        margin_mode=margin_mode if margin_mode in ("cross", "isolated") else None,
+        timestamp=int(d.get("updatedTime") or 0),
         raw=d,
     )
 

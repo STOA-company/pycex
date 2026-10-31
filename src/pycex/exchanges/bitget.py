@@ -1255,7 +1255,7 @@ def _map_error(code: str, msg: str) -> PyCexError:
         return InsufficientBalanceError(msg, code=code, exchange="bitget")
     if code in _AUTH_CODES:
         auth_err = AuthenticationError(msg)
-        auth_err.code = code  # type: ignore[attr-defined]  # lets the UTA place-order path see 40010 ("look it up, don't resend")
+        auth_err.code = code  # lets the UTA place-order path see 40010 ("look it up, don't resend")
         return auth_err
     if code in _ORDER_NOT_FOUND_CODES:
         return OrderNotFoundError(msg, code=code, exchange="bitget")
