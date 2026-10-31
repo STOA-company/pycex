@@ -55,6 +55,7 @@ match user's setting."), which surfaces to the caller unchanged.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -75,6 +76,7 @@ from pycex.exceptions import (
     ExchangeError,
     InsufficientBalanceError,
     InvalidOrderError,
+    NotSupportedError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -131,6 +133,8 @@ _PATHS: dict[str, dict[str, str]] = {
         "userTrades": "/fapi/v1/userTrades",
         "balance": "/fapi/v2/balance",
         "positionRisk": "/fapi/v2/positionRisk",
+        "leverage": "/fapi/v1/leverage",
+        "marginType": "/fapi/v1/marginType",
         "premiumIndex": "/fapi/v1/premiumIndex",
     },
 }
@@ -294,14 +298,25 @@ class Binance(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        reduce_only: bool = False,
     ) -> Order:
+        """``reduce_only`` (USDT-M futures, one-way mode) sends ``reduceOnly=true``
+        (POST /fapi/v1/order); spot has no position to reduce, so it is refused."""
         native = self.to_native(symbol)
+        if reduce_only and self.market_type != "linear":
+            raise InvalidOrderError(
+                "binance: reduce_only applies to USDT-M futures (market_type='linear') only",
+                code="reduceOnly",
+                exchange="binance",
+            )
         params: dict[str, Any] = {
             "symbol": native,
             "side": side.upper(),
             "type": order_type.upper(),
             "quantity": str(amount),
         }
+        if reduce_only:
+            params["reduceOnly"] = "true"
         if client_order_id is not None:
             params["newClientOrderId"] = client_order_id
         if price is not None:
@@ -311,6 +326,75 @@ class Binance(BaseExchange):
             params = self._signed_params(params)
             data = await self._http.post(self._p("order"), params=params, headers=self._auth_headers())
         return _parse_order(symbol, data)
+
+    async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
+        """``GET /fapi/v2/positionRisk?symbol=`` — current leverage and margin type of one symbol.
+
+        Returns the venue rows plus ``mgnMode`` (``isolated``/``cross``) and ``lever`` (str) so the caller
+        can confirm a setting actually took before ordering. ``mgn_mode`` is validated, not filtered:
+        a row in the other mode is returned as-is. Works with or without an open position.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: leverage settings require market_type='linear'")
+        if mgn_mode not in ("isolated", "cross", "crossed"):
+            raise InvalidOrderError("binance: unknown margin mode", code="marginType", exchange="binance")
+        async with self._rate_limiter.request("query", weight=5):
+            params = self._signed_params({"symbol": self.to_native(symbol)})
+            data = await self._http.get(self._p("positionRisk"), params=params, headers=self._auth_headers())
+        if not isinstance(data, list) or not data:
+            raise ExchangeError("binance: incomplete leverage snapshot", exchange="binance")
+        rows: list[dict[str, Any]] = []
+        for r in data:
+            row = dict(r)
+            row["mgnMode"] = "isolated" if str(row.get("marginType", "")).lower() == "isolated" else "cross"
+            row["lever"] = None if row.get("leverage") in (None, "") else str(row["leverage"])
+            rows.append(row)
+        return rows
+
+    async def set_margin_type(self, symbol: str, mgn_mode: str = "isolated") -> dict[str, Any]:
+        """``POST /fapi/v1/marginType`` (``ISOLATED``/``CROSSED``).
+
+        Error ``-4046`` ("No need to change margin type") means the symbol is already in that mode and
+        is treated as success. Any other error (e.g. ``-4047``/``-4048``: open position/order) is raised.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: margin type applies to market_type='linear' only")
+        if mgn_mode not in ("isolated", "cross", "crossed"):
+            raise InvalidOrderError(
+                f"binance: mgn_mode must be 'cross' or 'isolated', got {mgn_mode!r}",
+                code="marginType",
+                exchange="binance",
+            )
+        wire = "ISOLATED" if mgn_mode == "isolated" else "CROSSED"
+        try:
+            async with self._rate_limiter.request("order", weight=1):
+                params = self._signed_params({"symbol": self.to_native(symbol), "marginType": wire})
+                data = await self._http.post(self._p("marginType"), params=params, headers=self._auth_headers())
+        except ExchangeError as e:
+            if str(e.code) == "-4046":
+                return {"code": 200, "msg": "already " + wire, "marginType": wire}
+            raise
+        return data if isinstance(data, dict) else {}
+
+    async def set_leverage(self, symbol: str, lever: float, mgn_mode: str = "cross") -> dict[str, Any]:
+        """``POST /fapi/v1/leverage`` (integer 1..125 per symbol).
+
+        Sets the margin type first (``mgn_mode``; already-in-mode is success) then the leverage. Binance
+        refuses lowering leverage in isolated mode with an open position (``-4161``) — that error is
+        raised, never swallowed. A non-integer leverage is rejected before the request: Binance takes
+        integers only and silent rounding would place a different leverage than asked. No cap here.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: leverage applies to market_type='linear' only")
+        if not math.isfinite(lever) or lever < 1 or float(lever) != int(lever):
+            raise InvalidOrderError(
+                f"binance: lever must be a positive integer, got {lever!r}", code="leverage", exchange="binance"
+            )
+        await self.set_margin_type(symbol, mgn_mode)
+        async with self._rate_limiter.request("order", weight=1):
+            params = self._signed_params({"symbol": self.to_native(symbol), "leverage": int(lever)})
+            data = await self._http.post(self._p("leverage"), params=params, headers=self._auth_headers())
+        return data if isinstance(data, dict) else {}
 
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)

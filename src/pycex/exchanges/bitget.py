@@ -101,6 +101,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -118,6 +119,7 @@ from pycex.exceptions import (
     InsufficientBalanceError,
     InvalidOrderError,
     NetworkError,
+    NotSupportedError,
     OrderNotFoundError,
     PyCexError,
     RateLimitError,
@@ -201,6 +203,9 @@ _PATHS: dict[str, dict[str, str]] = {
         "funding": "/api/v2/mix/market/current-fund-rate",
         "positions": "/api/v2/mix/position/all-position",
         "balance": "/api/v2/mix/account/accounts",
+        "account": "/api/v2/mix/account/account",
+        "setLeverage": "/api/v2/mix/account/set-leverage",
+        "setMarginMode": "/api/v2/mix/account/set-margin-mode",
         "order": "/api/v2/mix/order/place-order",
         "cancel": "/api/v2/mix/order/cancel-order",
         "orderInfo": "/api/v2/mix/order/detail",
@@ -221,6 +226,22 @@ _UTA_KEYS: set[str] = set()
 _UNIFIED_REJECT = "40085"
 # Per the place-order docs: for these codes query the order by clientOid to learn whether it was placed.
 _UTA_UNKNOWN_CODES = frozenset({"40010", "40725", "45001"})
+
+
+def _bitget_margin_mode(mode: str) -> str:
+    """Normalise ``cross``/``crossed``/``isolated`` to Bitget's wire value (``crossed``/``isolated``)."""
+    m = str(mode).lower()
+    if m in ("cross", "crossed"):
+        return "crossed"
+    if m == "isolated":
+        return "isolated"
+    raise InvalidOrderError(
+        f"bitget: margin mode must be 'cross' or 'isolated', got {mode!r}", code="marginMode", exchange="bitget"
+    )
+
+
+def _bitget_num(v: float) -> str:
+    return str(int(v)) if float(v).is_integer() else str(v)
 
 
 def _uta_fallback(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -499,20 +520,33 @@ class Bitget(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        reduce_only: bool = False,
+        margin_mode: str = "crossed",
     ) -> Order:
+        """``reduce_only`` (linear, one-way position mode) sends ``reduceOnly=YES``
+        (POST /api/v2/mix/order/place-order); ``margin_mode`` ("crossed" default, or "isolated")
+        is the order's ``marginMode`` — it must match the symbol's margin mode set through
+        :meth:`set_margin_mode`. Both are rejected on spot, which has neither."""
         native = self.to_native(symbol)
         path = self._p("order")
+        wire_margin = _bitget_margin_mode(margin_mode)
+        if self.market_type != "linear" and (reduce_only or wire_margin != "crossed"):
+            raise InvalidOrderError(
+                "bitget: reduce_only/margin_mode apply to linear perpetuals only", code="reduceOnly", exchange="bitget"
+            )
         body: dict[str, Any]
         if self.market_type == "linear":
             body = {
                 "symbol": native,
                 "productType": self._product_type,
-                "marginMode": "crossed",
+                "marginMode": wire_margin,
                 "marginCoin": "USDT",
                 "size": str(amount),
                 "side": side.lower(),
                 "orderType": "limit" if order_type.lower() == "limit" else "market",
             }
+            if reduce_only:
+                body["reduceOnly"] = "YES"
             if order_type.lower() == "limit":
                 body["force"] = "gtc"
                 if price is not None:
@@ -548,6 +582,103 @@ class Bitget(BaseExchange):
             price=price,
             raw=data,
         )
+
+    async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
+        """``GET /api/v2/mix/account/account`` — the symbol's margin mode and leverage settings.
+
+        Returns one row: the raw venue fields (``marginMode``, ``crossedMarginLeverage``,
+        ``isolatedLongLever``, ``isolatedShortLever``) plus ``mgnMode`` and ``lever`` (the leverage of the
+        requested ``mgn_mode``; ``None`` when long/short isolated leverage differ). A row whose
+        ``marginMode`` is not the requested mode is returned as-is — the caller must compare it.
+        Classic (v2) keys only.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bitget: leverage settings require market_type='linear'")
+        want = _bitget_margin_mode(mgn_mode)
+        params = self._mix_params({"symbol": self.to_native(symbol), "marginCoin": "USDT"})
+        path = self._path(self._p("account"), params)
+        async with self._rate_limiter.request("query"):
+            data = await self._http.get(path, headers=self._signed_get(path))
+        result = self._check(data)
+        if not result or not isinstance(result[0], dict):
+            raise ExchangeError("bitget: incomplete leverage snapshot", exchange="bitget")
+        row = dict(result[0])
+        row["mgnMode"] = str(row.get("marginMode", "")).lower()
+        if want == "crossed":
+            lever: Any = row.get("crossedMarginLeverage")
+        else:
+            lo, sh = row.get("isolatedLongLever"), row.get("isolatedShortLever")
+            lever = lo if lo is not None and str(lo) == str(sh) else None
+        row["lever"] = None if lever in (None, "") else str(lever)
+        return [row]
+
+    async def set_margin_mode(self, symbol: str, mgn_mode: str = "isolated") -> dict[str, Any]:
+        """``POST /api/v2/mix/account/set-margin-mode`` — ``isolated``/``crossed`` per symbol.
+
+        Bitget refuses a change while the symbol has an open position or order (non-zero ``code``);
+        that error is raised, never swallowed. Classic (v2) keys only.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bitget: margin mode applies to market_type='linear' only")
+        body = {
+            "symbol": self.to_native(symbol),
+            "productType": self._product_type,
+            "marginCoin": "USDT",
+            "marginMode": _bitget_margin_mode(mgn_mode),
+        }
+        path = self._p("setMarginMode")
+        body_str = json.dumps(body)
+        async with self._rate_limiter.request("order"):
+            data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
+        result = self._check(data)
+        return result[0] if result and isinstance(result[0], dict) else {}
+
+    async def set_leverage(
+        self,
+        symbol: str,
+        lever: float,
+        mgn_mode: str = "cross",
+        *,
+        hold_side: str | None = None,
+        ensure_margin_mode: bool = False,
+    ) -> dict[str, Any]:
+        """``POST /api/v2/mix/account/set-leverage``.
+
+        ``mgn_mode`` only selects what is validated here (Bitget keeps one leverage per margin mode and
+        applies it to the symbol's *current* mode — call :meth:`set_margin_mode` first). ``hold_side``
+        ("long"/"short") is only for isolated hedge-mode positions. ``ensure_margin_mode=True`` first reads
+        the symbol's margin mode and calls :meth:`set_margin_mode` only when it differs (so an
+        already-isolated symbol sends no mode change). No risk cap lives here.
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bitget: leverage applies to market_type='linear' only")
+        wire_mode = _bitget_margin_mode(mgn_mode)
+        if not math.isfinite(lever) or lever <= 0:
+            raise InvalidOrderError(
+                f"bitget: lever must be a finite positive number, got {lever!r}", code="lever", exchange="bitget"
+            )
+        body: dict[str, Any] = {
+            "symbol": self.to_native(symbol),
+            "productType": self._product_type,
+            "marginCoin": "USDT",
+            "leverage": _bitget_num(lever),
+        }
+        if hold_side is not None:
+            if hold_side not in ("long", "short"):
+                raise InvalidOrderError(
+                    "bitget: hold_side must be 'long' or 'short'", code="holdSide", exchange="bitget"
+                )
+            body["holdSide"] = hold_side
+        if ensure_margin_mode:
+            current = (await self.fetch_leverage(symbol, mgn_mode))[0]["mgnMode"]
+            if current != wire_mode:
+                await self.set_margin_mode(symbol, mgn_mode)
+        path = self._p("setLeverage")
+        body_str = json.dumps(body)
+        async with self._rate_limiter.request("order"):
+            data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
+        result = self._check(data)
+        return result[0] if result and isinstance(result[0], dict) else {}
 
     @_uta_fallback("cancel_order")
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
@@ -727,8 +858,12 @@ class Bitget(BaseExchange):
         price: float | None = None,
         *,
         client_order_id: str | None = None,
+        reduce_only: bool = False,
+        margin_mode: str = "crossed",
     ) -> Order:
         native = self.to_native(symbol)
+        if _bitget_margin_mode(margin_mode) != "crossed":
+            raise NotSupportedError("bitget: isolated margin on a UTA key is unverified (refused, not made cross)")
         is_limit = order_type.lower() == "limit"
         oid = client_order_id or ("q" + uuid.uuid4().hex[:31])  # docs: always send clientOid (^[.A-Za-z0-9:/_-]{1,32}$)
         body: dict[str, Any] = {
@@ -741,6 +876,8 @@ class Bitget(BaseExchange):
         }
         if self.market_type == "linear":
             body["marginMode"] = "crossed"
+            if reduce_only:
+                body["reduceOnly"] = "yes"
         if is_limit:
             body["timeInForce"] = "gtc"
             if price is not None:
