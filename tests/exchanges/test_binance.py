@@ -19,7 +19,7 @@ from urllib.parse import parse_qsl
 import pytest
 from pytest_httpx import HTTPXMock
 
-from pycex.constants import BINANCE_FAPI, BINANCE_FAPI_TESTNET
+from pycex.constants import BINANCE_FAPI, BINANCE_FAPI_TESTNET, BINANCE_FAPI_TESTNET_LEGACY
 from pycex.exceptions import NotSupportedError
 from pycex.exchanges.binance import Binance, _parse_balance_linear, _parse_funding, _parse_market, _parse_trade
 from tests.conftest import load_fixture
@@ -52,6 +52,14 @@ def test_linear_base_url() -> None:
 def test_linear_sandbox_base_url() -> None:
     ex = Binance(api_key="k", secret="s", market_type="linear", sandbox=True)
     assert ex._http._base_url == BINANCE_FAPI_TESTNET
+    # Hosts per Binance docs (checked 2026-11-01): futures demo-fapi, spot testnet.binance.vision.
+    assert BINANCE_FAPI_TESTNET == "https://demo-fapi.binance.com"
+    assert BINANCE_FAPI_TESTNET_LEGACY == "https://testnet.binancefuture.com"
+    assert BINANCE_FAPI_TESTNET not in (BINANCE_FAPI, BINANCE_FAPI_TESTNET_LEGACY)
+    spot = Binance(api_key="k", secret="s", sandbox=True)
+    assert spot._http._base_url == "https://testnet.binance.vision"
+    live = Binance(api_key="k", secret="s", market_type="linear")
+    assert live._http._base_url == "https://fapi.binance.com"
 
 
 def test_to_native_linear_symbol() -> None:

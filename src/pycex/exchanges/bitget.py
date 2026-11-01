@@ -84,13 +84,15 @@ independently maintained third-party mapping of Bitget's real wire format):
   ``S``-prefixed native symbols (e.g. ``SBTCSUSDT``) that trade against a
   separate demo orderbook. ccxt's own ``sign()`` explicitly *skips* adding the
   ``PAPTRADING`` header when the request's ``productType`` is already one of
-  the ``S*`` variants, treating the two as alternatives rather than something
-  to combine. The brief specifies mechanism (2) for
+  the ``S*`` variants. The brief specifies mechanism (2) for
   ``sandbox=True, market_type="linear"`` (``productType ==
   "SUSDT-FUTURES"``, native symbol ``S{base}S{quote}``), which this adapter
-  implements; per the ccxt precedent above, the ``paptrading`` header is
-  *not* also sent in that case (only for spot sandbox, unchanged from the
-  existing/previously-shipped behavior).
+  implements. **Header (changed 2026-11-01, coin-demo-1101):** Bitget's official demo-trading
+  REST guide (bitget.com/docs/classic/demo-trading/rest-api) says every demo REST call
+  uses a Demo API Key *and* the ``paptrading: 1`` header, without a futures exception, so
+  the header is now sent on every private call in sandbox (spot and linear). The earlier
+  "no header for linear" followed ccxt only. This is not verified against a live demo
+  key from this repo -- tests/live-style walk in the trader repo does that.
 
 Inverse (coin-margined) perpetuals and hedge-mode (``tradeSide``) are out of
 scope — only USDT-settled linear in one-way mode, matching the OKX/Binance
@@ -267,13 +269,11 @@ def _uta_fallback(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any
 class Bitget(BaseExchange):
     """Bitget V2 spot exchange and USDT-margined linear perpetual futures.
 
-    Paper trading: pass ``sandbox=True``. For ``market_type="spot"`` this
-    routes private calls to Bitget's header-based demo trading
-    (``paptrading: 1``, requires a demo API key). For ``market_type=
-    "linear"`` this instead routes to Bitget's dedicated simulated-futures
-    productType (``SUSDT-FUTURES``) with ``S``-prefixed native symbols — see
-    the module docstring for why these are two different (non-combined)
-    mechanisms.
+    Paper trading: pass ``sandbox=True``. Private calls carry the
+    ``paptrading: 1`` header (requires a demo API key). For ``market_type=
+    "linear"`` the dedicated simulated-futures productType (``SUSDT-FUTURES``)
+    with ``S``-prefixed native symbols is used as well — see the module
+    docstring.
     """
 
     name = "bitget"
@@ -369,12 +369,10 @@ class Bitget(BaseExchange):
         return []
 
     def _signed_get(self, path: str) -> dict[str, str]:
-        demo = self.sandbox and self.market_type != "linear"
-        return bitget_headers(self._api_key, self._secret, self._passphrase, "GET", path, "", demo=demo)
+        return bitget_headers(self._api_key, self._secret, self._passphrase, "GET", path, "", demo=self.sandbox)
 
     def _signed_post(self, path: str, body: str) -> dict[str, str]:
-        demo = self.sandbox and self.market_type != "linear"
-        return bitget_headers(self._api_key, self._secret, self._passphrase, "POST", path, body, demo=demo)
+        return bitget_headers(self._api_key, self._secret, self._passphrase, "POST", path, body, demo=self.sandbox)
 
     @staticmethod
     def _path(path: str, params: dict[str, Any] | None) -> str:

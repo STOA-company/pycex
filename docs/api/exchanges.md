@@ -64,7 +64,7 @@ with Binance(api_key="TESTNET_KEY", secret="TESTNET_SECRET", sandbox=True) as ex
 ### Binance USDT-M Perpetuals (`market_type="linear"`)
 
 `market_type="linear"` switches the base URL to `fapi.binance.com` (sandbox:
-`testnet.binancefuture.com`) and every endpoint to its `/fapi/v1`/`/fapi/v2`
+`demo-fapi.binance.com`) and every endpoint to its `/fapi/v1`/`/fapi/v2`
 counterpart. Linear symbols use `BASE/QUOTE:QUOTE` notation, e.g. `BTC/USDT:USDT`.
 
 ```python

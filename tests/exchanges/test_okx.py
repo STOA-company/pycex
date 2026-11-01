@@ -663,3 +663,14 @@ async def test_empty_data_raises_exchange_error(httpx_mock: HTTPXMock, method: s
     with pytest.raises(ExchangeError):
         await getattr(ex, method)("BTC/USDT")
     await ex.close()
+
+
+async def test_x_simulated_trading_header_spot_sandbox_same_host(httpx_mock: HTTPXMock) -> None:
+    """OKX demo = same host + ``x-simulated-trading: 1`` for spot too (coin-demo-1101 contract)."""
+    httpx_mock.add_response(json={"code": "0", "msg": "", "data": []})
+    sandboxed = OKX(api_key="k", secret="s", passphrase="p", market_type="spot", sandbox=True)
+    await sandboxed.fetch_balance()
+    req = httpx_mock.get_requests()[-1]
+    assert req.headers["x-simulated-trading"] == "1"
+    assert req.url.host == "www.okx.com"
+    await sandboxed.close()
