@@ -357,10 +357,9 @@ async def test_fetch_positions_linear(httpx_mock: HTTPXMock) -> None:
     await ex.close()
 
 
-async def test_paptrading_header_only_for_spot_sandbox_not_linear(httpx_mock: HTTPXMock) -> None:
-    """Per the module docstring: Bitget's dedicated SUSDT-FUTURES productType
-    already signals demo mode for linear, so the paptrading header is only
-    added for spot sandbox (not doubled up for linear sandbox)."""
+async def test_paptrading_header_on_sandbox_spot_and_linear_not_live(httpx_mock: HTTPXMock) -> None:
+    """Bitget demo REST guide: Demo API Key + ``paptrading: 1`` on every call. Sandbox spot and
+    linear (SUSDT-FUTURES) both send it; live never does (coin-demo-1101)."""
     httpx_mock.add_response(json={"code": "00000", "msg": "success", "data": []})
     spot_sandbox = Bitget(api_key="k", secret=SECRET, passphrase="p", sandbox=True)
     await spot_sandbox.fetch_balance()
@@ -372,9 +371,17 @@ async def test_paptrading_header_only_for_spot_sandbox_not_linear(httpx_mock: HT
     linear_sandbox = Bitget(api_key="k", secret=SECRET, passphrase="p", market_type="linear", sandbox=True)
     await linear_sandbox.fetch_positions()
     linear_req = httpx_mock.get_requests()[-1]
-    assert "paptrading" not in linear_req.headers
+    assert linear_req.headers["paptrading"] == "1"
     assert linear_req.url.params["productType"] == "SUSDT-FUTURES"
     await linear_sandbox.close()
+
+    httpx_mock.add_response(json={"code": "00000", "msg": "success", "data": []})
+    live_linear = Bitget(api_key="k", secret=SECRET, passphrase="p", market_type="linear")
+    await live_linear.fetch_positions()
+    live_req = httpx_mock.get_requests()[-1]
+    assert "paptrading" not in live_req.headers
+    assert live_req.url.params["productType"] == "USDT-FUTURES"
+    await live_linear.close()
 
 
 # ── balance ──

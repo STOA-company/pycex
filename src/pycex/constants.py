@@ -8,7 +8,12 @@ from typing import Literal, NamedTuple
 BINANCE_BASE = "https://api.binance.com"
 BINANCE_TESTNET = "https://testnet.binance.vision"
 BINANCE_FAPI = "https://fapi.binance.com"  # USDT-M perpetual futures (market_type="linear")
-BINANCE_FAPI_TESTNET = "https://testnet.binancefuture.com"
+# USDS-M futures demo host. Binance's current docs (derivatives/usds-margined-futures/general-info,
+# checked 2026-11-01) give REST ``https://demo-fapi.binance.com`` / WS ``wss://demo-fstream.binance.com``.
+# The pre-2026 ``testnet.binancefuture.com`` was still answering ping on 2026-11-01, but it issues
+# separate keys and is no longer the documented host -> kept only as a named legacy constant.
+BINANCE_FAPI_TESTNET = "https://demo-fapi.binance.com"
+BINANCE_FAPI_TESTNET_LEGACY = "https://testnet.binancefuture.com"
 
 # ── Exchange request budgets ──
 #

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Binance USDS-M futures sandbox host is now `https://demo-fapi.binance.com` (Binance docs, 2026-11-01); the old
+  `testnet.binancefuture.com` stays as `BINANCE_FAPI_TESTNET_LEGACY`. Spot sandbox unchanged (`testnet.binance.vision`).
+- Bitget sandbox now sends the `paptrading: 1` header on private calls for `linear` (SUSDT-FUTURES) as well as spot,
+  following Bitget's demo REST guide. Live never sends it.
+
 ### Added
 
 - Bybit v5 USDT linear: isolated margin + leverage control. `set_leverage` (buyLeverage=sellLeverage; retCode `110043`
