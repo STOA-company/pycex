@@ -694,7 +694,7 @@ class Bitget(BaseExchange):
         if not algo_ids:
             return []
         known = {row["algo_id"]: row for row in await self.attached_algo_orders(symbol)}
-        results = []
+        results: list[dict[str, Any]] = []
         for algo_id in dict.fromkeys(algo_ids):
             if not algo_id:
                 raise InvalidOrderError("bitget: empty protection id", exchange=self.name)

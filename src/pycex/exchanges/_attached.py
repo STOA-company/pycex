@@ -67,7 +67,10 @@ def validate(market_type: str, reduce_only: bool, tp_px: Any, sl_px: Any, exchan
     if market_type != "linear" or reduce_only:
         raise InvalidOrderError("attached exits require a linear entry order", exchange=exchange, code="attached_exits")
     for value in (tp_px, sl_px):
-        if value is not None and (number(value) is None or number(value) <= 0):
+        if value is None:
+            continue
+        parsed = number(value)
+        if parsed is None or parsed <= 0:
             raise InvalidOrderError(
                 "attached trigger must be finite and positive", exchange=exchange, code="triggerPrice"
             )

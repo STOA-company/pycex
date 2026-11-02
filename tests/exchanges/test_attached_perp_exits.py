@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from pycex.exceptions import ExchangeError, InvalidOrderError
-from pycex.exchanges._attached import protection_client_order_id
+from pycex.exchanges._attached import protection_client_order_id, validate
 from pycex.exchanges.binance import Binance
 from pycex.exchanges.bitget import Bitget
 from pycex.exchanges.bybit import Bybit
@@ -538,3 +538,26 @@ async def test_uncached_lot_rules_are_loaded_before_child_post(cls: Any) -> None
     assert result["legs"][0]["quantity"] == "0.01"
     assert [r.method for r in requests] == ["GET", "POST"]
     await ex.close()
+
+
+@pytest.mark.parametrize(
+    ("tp_px", "sl_px", "ok"),
+    [
+        (None, "95", True),  # 손절만 — 익절 None 은 건너뛴다
+        ("110", None, True),  # 익절만 — 손절 None 은 건너뛴다
+        (None, "abc", False),  # 숫자로 못 읽는 값 → 거절(TypeError 아님)
+        ("", "95", False),  # 빈 문자열은 숫자 없음 → 거절
+        (None, "-1", False),
+        (None, "NaN", False),
+    ],
+)
+def test_validate_none_and_unparsable_triggers(tp_px: Any, sl_px: Any, ok: bool) -> None:
+    if ok:
+        assert validate("linear", False, tp_px, sl_px, "binance") is True
+    else:
+        with pytest.raises(InvalidOrderError):
+            validate("linear", False, tp_px, sl_px, "binance")
+
+
+def test_validate_no_triggers_is_not_requested() -> None:
+    assert validate("linear", False, None, None, "binance") is False
