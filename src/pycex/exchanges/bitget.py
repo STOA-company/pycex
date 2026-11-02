@@ -127,6 +127,8 @@ from pycex.exceptions import (
     RateLimitError,
     SymbolNotFoundError,
 )
+from pycex.exchanges._attached import ensure as ensure_exits
+from pycex.exchanges._attached import failure_reason, number, pending, validate
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
@@ -519,12 +521,15 @@ class Bitget(BaseExchange):
         *,
         client_order_id: str | None = None,
         reduce_only: bool = False,
+        tp_px: float | None = None,
+        sl_px: float | None = None,
         margin_mode: str = "crossed",
     ) -> Order:
         """``reduce_only`` (linear, one-way position mode) sends ``reduceOnly=YES``
         (POST /api/v2/mix/order/place-order); ``margin_mode`` ("crossed" default, or "isolated")
         is the order's ``marginMode`` — it must match the symbol's margin mode set through
         :meth:`set_margin_mode`. Both are rejected on spot, which has neither."""
+        attached = validate(self.market_type, reduce_only, tp_px, sl_px, self.name)
         native = self.to_native(symbol)
         path = self._p("order")
         wire_margin = _bitget_margin_mode(margin_mode)
@@ -566,6 +571,8 @@ class Bitget(BaseExchange):
         async with self._rate_limiter.request("order"):
             data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
         r = self._check(data)
+        if attached:
+            data = {**data, "attached_exits": pending()}
         first = r[0] if r else {}
         quote_amount = self.market_type == "spot" and body["orderType"] == "market" and side.lower() == "buy"
         return Order(
@@ -580,6 +587,150 @@ class Bitget(BaseExchange):
             price=price,
             raw=data,
         )
+
+    async def ensure_attached_exits(
+        self,
+        symbol: str,
+        side: str,
+        parent_order_id: str,
+        client_order_id: str | None,
+        filled_qty: Any,
+        tp_px: float | None = None,
+        sl_px: float | None = None,
+        existing: Any = None,
+    ) -> dict[str, Any]:
+        """Persist the parent before calling; quantity-specific TPSL closes the held side.
+
+        We use explicit child clientOid because preset orders do not expose a reliable
+        parent link. profit_plan/loss_plan are closing plans, never ordinary opening orders.
+        https://www.bitget.com/docs/catalog/classic-contract-plan/classic-contract-plan
+        """
+        validate(self.market_type, False, tp_px, sl_px, self.name)
+        if self._api_key in _UTA_KEYS:
+            raise NotSupportedError("bitget: UTA attached exits require v3 protection transport")
+
+        async def place(kind: str, oid: str, quantity: Decimal, trigger: Decimal) -> dict[str, Any]:
+            path = "/api/v2/mix/order/place-tpsl-order"
+            body = self._mix_params(
+                {
+                    "symbol": self.to_native(symbol),
+                    "marginCoin": "USDT",
+                    "planType": "loss_plan" if kind == "sl" else "profit_plan",
+                    "triggerPrice": str(trigger),
+                    "triggerType": "fill_price",
+                    "executePrice": "0",
+                    "holdSide": side.lower(),
+                    "size": str(quantity),
+                    "clientOid": oid,
+                }
+            )
+            body_str = json.dumps(body)
+            async with self._rate_limiter.request("order"):
+                data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
+            result = self._check(data)
+            row = result[0] if result else {}
+            return {"algo_id": str(row.get("orderId") or ""), "state": "live", "plan_type": body["planType"]}
+
+        return await ensure_exits(
+            exchange=self.name,
+            side=side,
+            parent_order_id=parent_order_id,
+            client_order_id=client_order_id,
+            filled_qty=filled_qty,
+            tp_px=tp_px,
+            sl_px=sl_px,
+            existing=existing,
+            place=place,
+        )
+
+    async def attached_algo_orders(self, symbol: str) -> list[dict[str, Any]]:
+        """Paginated TPSL snapshot; never infer a parent from prices or position side."""
+        if self.market_type != "linear":
+            raise NotSupportedError("bitget: conditional exits require linear market")
+        params = self._mix_params({"symbol": self.to_native(symbol), "planType": "profit_loss", "limit": "100"})
+        rows: list[dict[str, Any]] = []
+        cursors: set[str] = set()
+        while True:
+            path = self._path("/api/v2/mix/order/orders-plan-pending", params)
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get(path, headers=self._signed_get(path))
+            result = self._check(data)
+            page = result[0] if result else None
+            if not isinstance(page, dict) or not isinstance(page.get("entrustedList"), list):
+                raise ExchangeError("bitget: malformed TPSL snapshot", exchange=self.name)
+            items = page["entrustedList"]
+            for row in items:
+                plan = row.get("planType")
+                if plan not in ("profit_plan", "loss_plan", "pos_profit", "pos_loss"):
+                    continue
+                rows.append(
+                    {
+                        "algo_id": str(row.get("orderId") or ""),
+                        "client_order_id": str(row.get("clientOid") or ""),
+                        "parent_client_order_id": None,
+                        "order_id": None,
+                        "tp_trigger": number(row.get("triggerPrice"))
+                        if plan in ("profit_plan", "pos_profit")
+                        else None,
+                        "sl_trigger": number(row.get("triggerPrice")) if plan in ("loss_plan", "pos_loss") else None,
+                        "quantity": number(row.get("size")),
+                        "state": row.get("planStatus", ""),
+                        "plan_type": plan,
+                        "reduce_only": True,
+                        "raw": row,
+                    }
+                )
+            if len(items) < 100:
+                return rows
+            cursor = str(page.get("endId") or "")
+            if not cursor or cursor in cursors:
+                raise ExchangeError("bitget: incomplete TPSL pagination", exchange=self.name)
+            cursors.add(cursor)
+            params["idLessThan"] = cursor
+
+    async def cancel_algo_orders(self, symbol: str, algo_ids: list[str]) -> list[dict[str, Any]]:
+        """Cancel exact IDs with their plan types; inspect every per-item acknowledgement."""
+        if not algo_ids:
+            return []
+        known = {row["algo_id"]: row for row in await self.attached_algo_orders(symbol)}
+        results = []
+        for algo_id in dict.fromkeys(algo_ids):
+            if not algo_id:
+                raise InvalidOrderError("bitget: empty protection id", exchange=self.name)
+            row = known.get(algo_id)
+            if row is None:
+                results.append({"algo_id": algo_id, "status": "not_found", "reason": "absent_from_open_snapshot"})
+                continue
+            path = "/api/v2/mix/order/cancel-plan-order"
+            body = self._mix_params(
+                {
+                    "symbol": self.to_native(symbol),
+                    "marginCoin": "USDT",
+                    "orderIdList": [{"orderId": algo_id}],
+                    "planType": row["plan_type"],
+                }
+            )
+            body_str = json.dumps(body)
+            try:
+                async with self._rate_limiter.request("order"):
+                    data = await self._http.post_raw(path, body=body_str, headers=self._signed_post(path, body_str))
+                result = self._check(data)
+                ack = result[0] if result else {}
+                success = any(str(item.get("orderId")) == str(algo_id) for item in ack.get("successList", []))
+                failure = next(
+                    (item for item in ack.get("failureList", []) if str(item.get("orderId")) == str(algo_id)), None
+                )
+                results.append(
+                    {
+                        "algo_id": algo_id,
+                        "status": "cancelled" if success and not failure else "failed",
+                        "reason": "cancel_item_rejected" if failure else None,
+                        "raw": data,
+                    }
+                )
+            except PyCexError as exc:
+                results.append({"algo_id": algo_id, "status": "failed", "reason": failure_reason(exc)})
+        return results
 
     async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
         """``GET /api/v2/mix/account/account`` — the symbol's margin mode and leverage settings.
@@ -857,8 +1008,12 @@ class Bitget(BaseExchange):
         *,
         client_order_id: str | None = None,
         reduce_only: bool = False,
+        tp_px: float | None = None,
+        sl_px: float | None = None,
         margin_mode: str = "crossed",
     ) -> Order:
+        if tp_px is not None or sl_px is not None:
+            raise NotSupportedError("bitget: UTA attached exits require v3 protection transport")
         native = self.to_native(symbol)
         if _bitget_margin_mode(margin_mode) != "crossed":
             raise NotSupportedError("bitget: isolated margin on a UTA key is unverified (refused, not made cross)")

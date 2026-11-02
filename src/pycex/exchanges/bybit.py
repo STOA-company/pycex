@@ -67,6 +67,7 @@ from pycex.exceptions import (
     RateLimitError,
     SymbolNotFoundError,
 )
+from pycex.exchanges._attached import failure_reason, number, validate
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
@@ -291,6 +292,8 @@ class Bybit(BaseExchange):
         client_order_id: str | None = None,
         market_unit: str | None = None,
         reduce_only: bool = False,
+        tp_px: float | None = None,
+        sl_px: float | None = None,
     ) -> Order:
         """``reduce_only`` (linear, one-way position mode) sends ``reduceOnly=true``
         (POST /v5/order/create, https://bybit-exchange.github.io/docs/v5/order/create-order);
@@ -304,6 +307,7 @@ class Bybit(BaseExchange):
                 code="reduceOnly",
                 exchange="bybit",
             )
+        attached = validate(self.market_type, reduce_only, tp_px, sl_px, self.name)
         native = self.to_native(symbol)
         body: dict[str, Any] = {
             "category": self._category,
@@ -325,6 +329,14 @@ class Bybit(BaseExchange):
             body["timeInForce"] = "GTC"
         if reduce_only:
             body["reduceOnly"] = True
+        # Partial mode creates closing legs for the actual filled quantity (market exits).
+        # https://bybit-exchange.github.io/docs/v5/order/create-order
+        if attached:
+            body.update(tpslMode="Partial", tpTriggerBy="LastPrice", slTriggerBy="LastPrice")
+            if tp_px is not None:
+                body.update(takeProfit=str(tp_px), tpOrderType="Market")
+            if sl_px is not None:
+                body.update(stopLoss=str(sl_px), slOrderType="Market")
         if client_order_id is not None:
             body["orderLinkId"] = client_order_id
         async with self._rate_limiter.request("order"):
@@ -346,6 +358,72 @@ class Bybit(BaseExchange):
             price=price,
             raw=data,
         )
+
+    async def attached_algo_orders(self, symbol: str) -> list[dict[str, Any]]:
+        """List only conditional closing orders; explicit parentOrderLinkId proves ownership.
+
+        https://bybit-exchange.github.io/docs/v5/order/open-order
+        """
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: attached exits require linear market")
+        params: dict[str, Any] = {
+            "category": self._category,
+            "symbol": self.to_native(symbol),
+            "orderFilter": "StopOrder",
+            "openOnly": 0,
+            "limit": 50,
+        }
+        rows: list[dict[str, Any]] = []
+        cursors: set[str] = set()
+        while True:
+            path, headers = self._signed_get_request("/v5/order/realtime", params)
+            async with self._rate_limiter.request("query"):
+                data = await self._http.get(path, headers=headers)
+            result = self._check(data)
+            if not isinstance(result.get("list"), list):
+                raise ExchangeError("bybit: malformed attached exit snapshot", exchange=self.name)
+            for row in result["list"]:
+                stop_type = row.get("stopOrderType", "")
+                if stop_type not in ("TakeProfit", "StopLoss", "PartialTakeProfit", "PartialStopLoss", "tpslOrder"):
+                    continue
+                tp = "TakeProfit" in stop_type
+                sl = "StopLoss" in stop_type
+                rows.append(
+                    {
+                        "algo_id": str(row.get("orderId") or ""),
+                        "client_order_id": str(row.get("orderLinkId") or ""),
+                        "parent_client_order_id": row.get("parentOrderLinkId") or None,
+                        "order_id": None,
+                        "tp_trigger": number(row.get("triggerPrice")) if tp else number(row.get("takeProfit")),
+                        "sl_trigger": number(row.get("triggerPrice")) if sl else number(row.get("stopLoss")),
+                        "quantity": number(row.get("qty")),
+                        "state": row.get("orderStatus", ""),
+                        "reduce_only": row.get("reduceOnly") in (True, "true"),
+                        "raw": row,
+                    }
+                )
+            cursor = str(result.get("nextPageCursor") or "")
+            if not cursor:
+                return rows
+            if cursor in cursors:
+                raise ExchangeError("bybit: incomplete attached-exit pagination", exchange=self.name)
+            cursors.add(cursor)
+            params["cursor"] = cursor
+
+    async def cancel_algo_orders(self, symbol: str, algo_ids: list[str]) -> list[dict[str, Any]]:
+        """Cancel individually; acknowledgement still requires a subsequent open-order read."""
+        if self.market_type != "linear":
+            raise NotSupportedError("bybit: attached exits require linear market")
+        results = []
+        for algo_id in dict.fromkeys(algo_ids):
+            if not algo_id:
+                raise InvalidOrderError("bybit: empty protection id", exchange=self.name)
+            try:
+                order = await self.cancel_order(algo_id, symbol)
+                results.append({"algo_id": algo_id, "status": "cancelled" if order.id == algo_id else "failed"})
+            except PyCexError as exc:
+                results.append({"algo_id": algo_id, "status": "failed", "reason": failure_reason(exc)})
+        return results
 
     async def cancel_order(self, order_id: str, symbol: str) -> Order:
         native = self.to_native(symbol)

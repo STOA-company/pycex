@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 
 from pycex.auth import binance_headers, binance_sign
@@ -82,6 +83,8 @@ from pycex.exceptions import (
     RateLimitError,
     SymbolNotFoundError,
 )
+from pycex.exchanges._attached import ensure as ensure_exits
+from pycex.exchanges._attached import failure_reason, number, pending, validate
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
@@ -299,9 +302,12 @@ class Binance(BaseExchange):
         *,
         client_order_id: str | None = None,
         reduce_only: bool = False,
+        tp_px: float | None = None,
+        sl_px: float | None = None,
     ) -> Order:
         """``reduce_only`` (USDT-M futures, one-way mode) sends ``reduceOnly=true``
         (POST /fapi/v1/order); spot has no position to reduce, so it is refused."""
+        attached = validate(self.market_type, reduce_only, tp_px, sl_px, self.name)
         native = self.to_native(symbol)
         if reduce_only and self.market_type != "linear":
             raise InvalidOrderError(
@@ -325,7 +331,112 @@ class Binance(BaseExchange):
         async with self._rate_limiter.request("order", weight=1):
             params = self._signed_params(params)
             data = await self._http.post(self._p("order"), params=params, headers=self._auth_headers())
-        return _parse_order(symbol, data)
+        order = _parse_order(symbol, data)
+        if attached:
+            order.raw = {**order.raw, "attached_exits": pending()}
+        return order
+
+    async def ensure_attached_exits(
+        self,
+        symbol: str,
+        side: str,
+        parent_order_id: str,
+        client_order_id: str | None,
+        filled_qty: Any,
+        tp_px: float | None = None,
+        sl_px: float | None = None,
+        existing: Any = None,
+    ) -> dict[str, Any]:
+        """Protect only confirmed fill deltas after the caller persists the parent receipt.
+
+        One-way USD-M: reduceOnly prevents either sibling leg reversing the position.
+        https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade
+        The caller must durably claim writes and reconcile unknown outcomes; this never retries.
+        """
+        validate(self.market_type, False, tp_px, sl_px, self.name)
+
+        async def place(kind: str, oid: str, quantity: Decimal, trigger: Decimal) -> dict[str, Any]:
+            params = self._signed_params(
+                {
+                    "symbol": self.to_native(symbol),
+                    "algoType": "CONDITIONAL",
+                    "side": "SELL" if side.lower() == "buy" else "BUY",
+                    "type": "STOP_MARKET" if kind == "sl" else "TAKE_PROFIT_MARKET",
+                    "quantity": str(quantity),
+                    "triggerPrice": str(trigger),
+                    "reduceOnly": "true",
+                    "workingType": "CONTRACT_PRICE",
+                    "clientAlgoId": oid,
+                }
+            )
+            async with self._rate_limiter.request("order", weight=1):
+                data = await self._http.post("/fapi/v1/algoOrder", params=params, headers=self._auth_headers())
+            if isinstance(data, dict) and int(data.get("code", 0)) < 0:
+                raise _map_error(str(data["code"]), str(data.get("msg", "protection rejected")))
+            return {"algo_id": str(data.get("algoId") or ""), "state": data.get("algoStatus", "NEW")}
+
+        return await ensure_exits(
+            exchange=self.name,
+            side=side,
+            parent_order_id=parent_order_id,
+            client_order_id=client_order_id,
+            filled_qty=filled_qty,
+            tp_px=tp_px,
+            sl_px=sl_px,
+            existing=existing,
+            place=place,
+        )
+
+    async def attached_algo_orders(self, symbol: str) -> list[dict[str, Any]]:
+        """List conditional exits; parent ownership is matched using persisted child ids."""
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: conditional exits require linear market")
+        async with self._rate_limiter.request("query", weight=1):
+            params = self._signed_params({"symbol": self.to_native(symbol), "algoType": "CONDITIONAL"})
+            data = await self._http.get("/fapi/v1/openAlgoOrders", params=params, headers=self._auth_headers())
+        if not isinstance(data, list):
+            raise ExchangeError("binance: malformed conditional order snapshot", exchange=self.name)
+        rows = []
+        for row in data:
+            kind = str(row.get("orderType") or row.get("type") or "")
+            if kind not in ("STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT"):
+                continue
+            rows.append(
+                {
+                    "algo_id": str(row.get("algoId") or ""),
+                    "client_order_id": str(row.get("clientAlgoId") or ""),
+                    "parent_client_order_id": None,
+                    "order_id": None,
+                    "tp_trigger": number(row.get("triggerPrice")) if kind.startswith("TAKE_PROFIT") else None,
+                    "sl_trigger": number(row.get("triggerPrice")) if kind.startswith("STOP") else None,
+                    "quantity": number(row.get("quantity")),
+                    "state": row.get("algoStatus", ""),
+                    "reduce_only": row.get("reduceOnly") in (True, "true"),
+                    "raw": row,
+                }
+            )
+        return rows
+
+    async def cancel_algo_orders(self, symbol: str, algo_ids: list[str]) -> list[dict[str, Any]]:
+        """Cancel exact owned IDs; never uses the symbol-wide cancellation endpoint."""
+        if self.market_type != "linear":
+            raise NotSupportedError("binance: conditional exits require linear market")
+        results = []
+        for algo_id in dict.fromkeys(algo_ids):
+            if not algo_id:
+                raise InvalidOrderError("binance: empty protection id", exchange=self.name)
+            try:
+                async with self._rate_limiter.request("order", weight=1):
+                    data = await self._http.delete(
+                        "/fapi/v1/algoOrder",
+                        headers=self._auth_headers(),
+                        params=self._signed_params({"algoId": algo_id}),
+                    )
+                success = str(data.get("algoId", "")) == str(algo_id) and data.get("code", 200) == 200
+                results.append({"algo_id": algo_id, "status": "cancelled" if success else "failed", "raw": data})
+            except PyCexError as exc:
+                results.append({"algo_id": algo_id, "status": "failed", "reason": failure_reason(exc)})
+        return results
 
     async def fetch_leverage(self, symbol: str, mgn_mode: str = "isolated") -> list[dict[str, Any]]:
         """``GET /fapi/v2/positionRisk?symbol=`` — current leverage and margin type of one symbol.
