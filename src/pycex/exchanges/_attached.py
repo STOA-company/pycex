@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation, localcontext
 from typing import Any
 
 from pycex.exceptions import DuplicateOrderError, ExchangeError, InvalidOrderError, NetworkError, PyCexError
+from pycex.models.market import Market
 
 
 def number(value: Any) -> Decimal | None:
@@ -18,6 +19,45 @@ def number(value: Any) -> Decimal | None:
     except (InvalidOperation, ValueError):
         return None
     return result if result.is_finite() else None
+
+
+def plain(value: Decimal) -> str:
+    """Fixed-point decimal without insignificant zeros or exponent notation."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def floor_step(value: Decimal, step: Decimal) -> Decimal:
+    with localcontext() as ctx:
+        ctx.prec = max(50, len(value.as_tuple().digits) + abs(value.adjusted() - step.adjusted()) + 4)
+        return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+async def protection_market(adapter: Any, symbol: str) -> Market:
+    native = adapter.to_native(symbol)
+    if native not in adapter._markets:
+        await adapter.fetch_markets(symbols=[symbol])
+    market: Market | None = adapter._markets.get(native)
+    if market is None:
+        raise InvalidOrderError("attached exits require market lot rules", exchange=adapter.name)
+    return market
+
+
+def lot_rules(market: Market) -> tuple[Decimal, Decimal, Decimal | None]:
+    """Prefer wire strings over float metadata; LOT_SIZE applies to algo quantities."""
+    raw = market.raw
+    filters = {f.get("filterType"): f for f in raw.get("filters", [])}
+    lot = filters.get("LOT_SIZE", {})
+    bybit = raw.get("lotSizeFilter") or {}
+    step = number(lot.get("stepSize") or bybit.get("qtyStep") or raw.get("sizeMultiplier") or market.amount_step)
+    minimum = number(lot.get("minQty") or bybit.get("minOrderQty") or raw.get("minTradeNum"))
+    tick = number(filters.get("PRICE_FILTER", {}).get("tickSize") or (raw.get("priceFilter") or {}).get("tickSize"))
+    if tick is None and raw.get("priceEndStep") and raw.get("pricePlace") is not None:
+        tick = Decimal(str(raw["priceEndStep"])) * Decimal(10) ** -int(raw["pricePlace"])
+    tick = tick or number(market.price_tick)
+    if step is None or step <= 0:
+        raise InvalidOrderError("attached exits require a positive lot step")
+    return step, max(step, minimum or step), tick if tick and tick > 0 else None
 
 
 def validate(market_type: str, reduce_only: bool, tp_px: Any, sl_px: Any, exchange: str) -> bool:
@@ -68,6 +108,7 @@ async def ensure(
     sl_px: Any,
     existing: Any,
     place: Callable[[str, str, Decimal, Decimal], Awaitable[dict[str, Any]]],
+    market: Callable[[], Awaitable[Market]],
 ) -> dict[str, Any]:
     """Append only unprotected fill deltas. The caller durably claims each write.
 
@@ -86,6 +127,8 @@ async def ensure(
         raise InvalidOrderError("attached exits require entry side and parent id", exchange=exchange)
     if qty == 0:
         return {**pending(), "legs": legs}
+    rules = None
+    waiting_minimum = False
     for kind, trigger in (("sl", sl_px), ("tp", tp_px)):
         if trigger is None:
             continue
@@ -97,9 +140,21 @@ async def ensure(
         delta = qty - protected
         if delta <= 0:
             continue
+        if rules is None:
+            rules = lot_rules(await market())
+        step, minimum, tick = rules
+        delta = floor_step(delta, step)
+        if delta < minimum:
+            waiting_minimum = True
+            continue
+        trigger_value = Decimal(str(trigger))
+        if tick is not None:
+            trigger_value = floor_step(trigger_value, tick)
+        if trigger_value <= 0:
+            raise InvalidOrderError("attached trigger is below the price tick", exchange=exchange)
         oid = protection_client_order_id(str(client_order_id or parent_order_id), kind, qty)
         try:
-            row = await place(kind, oid, delta, Decimal(str(trigger)))
+            row = await place(kind, oid, delta, trigger_value)
             algo_id = str(row.get("algo_id") or "")
             if not algo_id:
                 raise NetworkError("protection response missing order id")
@@ -124,14 +179,16 @@ async def ensure(
             {
                 **row,
                 "kind": kind,
-                "quantity": str(delta),
+                "quantity": plain(delta),
                 "cumulative_qty": str(qty),
                 "client_order_id": oid,
                 "order_id": str(parent_order_id),
                 "parent_client_order_id": client_order_id,
-                "tp_trigger": str(trigger) if kind == "tp" else None,
-                "sl_trigger": str(trigger) if kind == "sl" else None,
+                "tp_trigger": plain(trigger_value) if kind == "tp" else None,
+                "sl_trigger": plain(trigger_value) if kind == "sl" else None,
                 "state": row.get("state") or "NEW",
             }
         )
+    if waiting_minimum:
+        return {"status": "pending_min_qty", "attached": False, "reason": "pending_min_qty", "legs": legs}
     return {"status": "pending_confirmation", "attached": False, "reason": "awaiting_exchange_snapshot", "legs": legs}

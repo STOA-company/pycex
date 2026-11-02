@@ -84,7 +84,7 @@ from pycex.exceptions import (
     SymbolNotFoundError,
 )
 from pycex.exchanges._attached import ensure as ensure_exits
-from pycex.exchanges._attached import failure_reason, number, pending, validate
+from pycex.exchanges._attached import failure_reason, number, pending, plain, protection_market, validate
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
@@ -362,8 +362,8 @@ class Binance(BaseExchange):
                     "algoType": "CONDITIONAL",
                     "side": "SELL" if side.lower() == "buy" else "BUY",
                     "type": "STOP_MARKET" if kind == "sl" else "TAKE_PROFIT_MARKET",
-                    "quantity": str(quantity),
-                    "triggerPrice": str(trigger),
+                    "quantity": plain(quantity),
+                    "triggerPrice": plain(trigger),
                     "reduceOnly": "true",
                     "workingType": "CONTRACT_PRICE",
                     "clientAlgoId": oid,
@@ -385,6 +385,7 @@ class Binance(BaseExchange):
             sl_px=sl_px,
             existing=existing,
             place=place,
+            market=lambda: protection_market(self, symbol),
         )
 
     async def attached_algo_orders(self, symbol: str) -> list[dict[str, Any]]:
@@ -432,7 +433,7 @@ class Binance(BaseExchange):
                         headers=self._auth_headers(),
                         params=self._signed_params({"algoId": algo_id}),
                     )
-                success = str(data.get("algoId", "")) == str(algo_id) and data.get("code", 200) == 200
+                success = str(data.get("algoId", "")) == str(algo_id) and str(data.get("code", 200)) == "200"
                 results.append({"algo_id": algo_id, "status": "cancelled" if success else "failed", "raw": data})
             except PyCexError as exc:
                 results.append({"algo_id": algo_id, "status": "failed", "reason": failure_reason(exc)})

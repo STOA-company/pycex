@@ -19,12 +19,22 @@ from pycex.exchanges._attached import protection_client_order_id
 from pycex.exchanges.binance import Binance
 from pycex.exchanges.bitget import Bitget
 from pycex.exchanges.bybit import Bybit
+from pycex.models.market import Market
 
 SYMBOL = "BTC/USDT:USDT"
 
 
 def mock_exchange(cls: Any, handler: Any, **kwargs: Any) -> Any:
     ex = cls(api_key="offline-key", secret="offline-secret", market_type="linear", **kwargs)
+    ex._markets["BTCUSDT"] = Market(
+        symbol=SYMBOL,
+        native="BTCUSDT",
+        base="BTC",
+        quote="USDT",
+        market_type="linear",
+        amount_step=0.001,
+        price_tick=0.1,
+    )
     ex._http.set_transport_factory(lambda: httpx.MockTransport(handler))
     return ex
 
@@ -323,7 +333,7 @@ async def test_binance_snapshot_and_cancel_exact_id_only() -> None:
                 ],
             )
         assert req.url.params["algoId"] == "1"
-        return httpx.Response(200, json={"algoId": 1, "code": 200, "msg": "success"})
+        return httpx.Response(200, json={"algoId": 1, "code": "200", "msg": "success"})
 
     ex = mock_exchange(Binance, handle)
     rows = await ex.attached_algo_orders(SYMBOL)
@@ -409,4 +419,122 @@ async def test_documented_uncertain_code_is_never_retried(cls: Any, code: str) -
     assert state["status"] == "unknown"
     await ex.ensure_attached_exits(SYMBOL, "buy", "parent", "intent1", ".4", sl_px=97, existing=state)
     assert len(calls) == 1
+    await ex.close()
+
+
+@pytest.mark.parametrize("cls", [Binance, Bitget])
+async def test_quantity_floor_uses_real_step_and_preserves_dust(cls: Any) -> None:
+    bodies = []
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        bodies.append(dict(req.url.params) if cls is Binance else json.loads(req.content))
+        return httpx.Response(200, json=success(cls, {"algoId": str(len(bodies)), "orderId": str(len(bodies))}))
+
+    ex = mock_exchange(cls, handle)
+    ex._markets["BTCUSDT"].amount_step = 0.005
+    state = await ex.ensure_attached_exits(SYMBOL, "buy", "p", "c", Decimal("0.0120000000000000"), sl_px=97.19)
+    assert bodies[0].get("quantity", bodies[0].get("size")) == "0.01"
+    assert bodies[0]["triggerPrice"] == "97.1"
+    assert state["legs"][0]["quantity"] == "0.01"
+    dust = await ex.ensure_attached_exits(SYMBOL, "buy", "p", "c", Decimal("0.012"), sl_px=97.19, existing=state)
+    assert dust["status"] == "pending_min_qty" and len(bodies) == 1
+    grown = await ex.ensure_attached_exits(SYMBOL, "buy", "p", "c", Decimal("0.016"), sl_px=97.19, existing=dust)
+    assert len(bodies) == 2 and grown["legs"][-1]["quantity"] == "0.005"
+    await ex.close()
+
+
+@pytest.mark.parametrize("cls", [Binance, Bitget])
+async def test_minimum_lot_waits_without_post(cls: Any) -> None:
+    calls = []
+    ex = mock_exchange(cls, lambda r: calls.append(r))
+    ex._markets["BTCUSDT"].raw = {"filters": [{"filterType": "LOT_SIZE", "stepSize": "0.005", "minQty": "0.01"}]}
+    state = await ex.ensure_attached_exits(SYMBOL, "buy", "p", "c", Decimal("0.009"), sl_px=97)
+    assert state["status"] == "pending_min_qty" and not state["legs"] and not calls
+    await ex.close()
+
+
+async def test_bybit_attached_quantity_is_plain_and_floored() -> None:
+    calls = []
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(req.content))
+        return httpx.Response(200, json=success(Bybit, {"orderId": "p"}))
+
+    ex = mock_exchange(Bybit, handle)
+    ex._markets["BTCUSDT"].raw = {"lotSizeFilter": {"qtyStep": "0.005", "minOrderQty": "0.01"}}
+    await ex.create_order(SYMBOL, "buy", "market", Decimal("0.0120000000000000"), sl_px=97.19)
+    assert calls[0]["qty"] == "0.01" and calls[0]["stopLoss"] == "97.1"
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order(SYMBOL, "buy", "market", Decimal("0.009"), sl_px=97)
+    assert len(calls) == 1
+    await ex.close()
+
+
+@pytest.mark.parametrize("code,expected", [(200, "cancelled"), ("200", "cancelled"), ("400", "failed")])
+async def test_binance_cancel_documented_code_types(code: Any, expected: str) -> None:
+    ex = mock_exchange(Binance, lambda r: httpx.Response(200, json={"algoId": 1, "code": code}))
+    assert (await ex.cancel_algo_orders(SYMBOL, ["1"]))[0]["status"] == expected
+    await ex.close()
+
+
+async def test_bybit_missing_parent_uses_persisted_child_ids_not_shared_prefix() -> None:
+    page = [
+        {"orderId": "child1", "orderLinkId": "", "stopOrderType": "PartialStopLoss"},
+        {"orderId": "child2", "orderLinkId": "qsl-exact", "stopOrderType": "PartialStopLoss"},
+        {"orderId": "foreign", "orderLinkId": "qsl-exact-extra", "stopOrderType": "PartialStopLoss"},
+    ]
+    ex = mock_exchange(Bybit, lambda r: httpx.Response(200, json=success(Bybit, {"list": page})))
+    persisted = {
+        "legs": [
+            {"algo_id": "child1", "order_id": "parent-id", "parent_client_order_id": "intent1"},
+            {"client_order_id": "qsl-exact", "order_id": "parent-id", "parent_client_order_id": "intent1"},
+        ]
+    }
+    rows = await ex.attached_algo_orders(SYMBOL, existing=persisted)
+    assert [r["parent_client_order_id"] for r in rows] == ["intent1", "intent1", None]
+    assert rows[0]["order_id"] == "parent-id"
+    rows = await ex.attached_algo_orders(SYMBOL)
+    assert rows[0]["parent_client_order_id"] == "intent1"
+    await ex.close()
+
+
+async def test_bybit_confirmed_link_survives_field_missing_on_next_snapshot() -> None:
+    row = {"orderId": "child", "orderLinkId": "", "parentOrderLinkId": "intent1", "stopOrderType": "PartialStopLoss"}
+    ex = mock_exchange(Bybit, lambda r: httpx.Response(200, json=success(Bybit, {"list": [row]})))
+    assert (await ex.attached_algo_orders(SYMBOL))[0]["parent_client_order_id"] == "intent1"
+    row.pop("parentOrderLinkId")
+    assert (await ex.attached_algo_orders(SYMBOL))[0]["parent_client_order_id"] == "intent1"
+    await ex.close()
+
+
+@pytest.mark.parametrize("cls", [Binance, Bitget])
+async def test_uncached_lot_rules_are_loaded_before_child_post(cls: Any) -> None:
+    requests = []
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        requests.append(req)
+        if req.method == "GET":
+            market = {
+                "symbol": "BTCUSDT",
+                "baseAsset": "BTC",
+                "quoteAsset": "USDT",
+                "baseCoin": "BTC",
+                "quoteCoin": "USDT",
+                "status": "TRADING",
+                "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.005", "minQty": "0.01"}],
+                "sizeMultiplier": "0.005",
+                "minTradeNum": "0.01",
+                "pricePlace": "1",
+            }
+            data = {"symbols": [market]} if cls is Binance else success(cls, [market])
+            return httpx.Response(200, json=data)
+        body = dict(req.url.params) if cls is Binance else json.loads(req.content)
+        assert body.get("quantity", body.get("size")) == "0.01"
+        return httpx.Response(200, json=success(cls, {"algoId": "1", "orderId": "1"}))
+
+    ex = mock_exchange(cls, handle)
+    ex._markets.clear()
+    result = await ex.ensure_attached_exits(SYMBOL, "buy", "p", "c", Decimal("0.0120000000000000"), sl_px=97)
+    assert result["legs"][0]["quantity"] == "0.01"
+    assert [r.method for r in requests] == ["GET", "POST"]
     await ex.close()

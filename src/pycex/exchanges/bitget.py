@@ -128,7 +128,7 @@ from pycex.exceptions import (
     SymbolNotFoundError,
 )
 from pycex.exchanges._attached import ensure as ensure_exits
-from pycex.exchanges._attached import failure_reason, number, pending, validate
+from pycex.exchanges._attached import failure_reason, number, pending, plain, protection_market, validate
 from pycex.http import HTTPClient
 from pycex.models.balance import Balance, BalanceEntry
 from pycex.models.candle import Candle
@@ -616,11 +616,11 @@ class Bitget(BaseExchange):
                     "symbol": self.to_native(symbol),
                     "marginCoin": "USDT",
                     "planType": "loss_plan" if kind == "sl" else "profit_plan",
-                    "triggerPrice": str(trigger),
+                    "triggerPrice": plain(trigger),
                     "triggerType": "fill_price",
                     "executePrice": "0",
                     "holdSide": side.lower(),
-                    "size": str(quantity),
+                    "size": plain(quantity),
                     "clientOid": oid,
                 }
             )
@@ -641,6 +641,7 @@ class Bitget(BaseExchange):
             sl_px=sl_px,
             existing=existing,
             place=place,
+            market=lambda: protection_market(self, symbol),
         )
 
     async def attached_algo_orders(self, symbol: str) -> list[dict[str, Any]]:
