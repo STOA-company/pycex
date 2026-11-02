@@ -520,8 +520,13 @@ class Bitget(BaseExchange):
         client_order_id: str | None = None,
         reduce_only: bool = False,
         margin_mode: str = "crossed",
+        trade_side: str | None = None,
     ) -> Order:
-        """``reduce_only`` (linear, one-way position mode) sends ``reduceOnly=YES``
+        """``trade_side`` (``"open"``/``"close"``, linear hedge mode only) sends ``tradeSide``. In hedge mode
+        ``side`` is the **position direction** (buy = long, sell = short), so closing a long is
+        ``side="buy", trade_side="close"``. ``reduceOnly`` is one-way only and is refused together with it.
+
+        ``reduce_only`` (linear, one-way position mode) sends ``reduceOnly=YES``
         (POST /api/v2/mix/order/place-order); ``margin_mode`` ("crossed" default, or "isolated")
         is the order's ``marginMode`` — it must match the symbol's margin mode set through
         :meth:`set_margin_mode`. Both are rejected on spot, which has neither."""
@@ -532,6 +537,16 @@ class Bitget(BaseExchange):
             raise InvalidOrderError(
                 "bitget: reduce_only/margin_mode apply to linear perpetuals only", code="reduceOnly", exchange="bitget"
             )
+        if trade_side is not None:
+            if self.market_type != "linear" or str(trade_side).lower() not in ("open", "close"):
+                raise InvalidOrderError(
+                    "bitget: trade_side is open or close on linear perpetuals only", code="tradeSide", exchange="bitget"
+                )
+            if reduce_only:
+                raise InvalidOrderError(
+                    "bitget: reduceOnly is one-way only; hedge close uses trade_side", code="reduceOnly",
+                    exchange="bitget",
+                )
         body: dict[str, Any]
         if self.market_type == "linear":
             body = {
@@ -545,6 +560,8 @@ class Bitget(BaseExchange):
             }
             if reduce_only:
                 body["reduceOnly"] = "YES"
+            if trade_side is not None:
+                body["tradeSide"] = str(trade_side).lower()
             if order_type.lower() == "limit":
                 body["force"] = "gtc"
                 if price is not None:
@@ -858,8 +875,11 @@ class Bitget(BaseExchange):
         client_order_id: str | None = None,
         reduce_only: bool = False,
         margin_mode: str = "crossed",
+        trade_side: str | None = None,
     ) -> Order:
         native = self.to_native(symbol)
+        if trade_side is not None:
+            raise NotSupportedError("bitget: hedge-mode orders on a UTA key are unverified (refused)")
         if _bitget_margin_mode(margin_mode) != "crossed":
             raise NotSupportedError("bitget: isolated margin on a UTA key is unverified (refused, not made cross)")
         is_limit = order_type.lower() == "limit"
