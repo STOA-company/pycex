@@ -615,6 +615,30 @@ async def test_create_order_linear_body_shape(httpx_mock: HTTPXMock) -> None:
     await ex.close()
 
 
+@pytest.mark.parametrize("side,trade", [("buy", "open"), ("sell", "open"), ("buy", "close"), ("sell", "close")])
+async def test_create_order_linear_hedge_trade_side(httpx_mock: HTTPXMock, side: str, trade: str) -> None:
+    httpx_mock.add_response(
+        json={"code": "00000", "msg": "success", "requestTime": 1, "data": {"orderId": "1", "clientOid": "c"}}
+    )
+    ex = Bitget(api_key="k", secret=SECRET, passphrase="p", market_type="linear")
+    await ex.create_order("BTC/USDT:USDT", side, "market", 0.01, trade_side=trade)
+    body = json_lib.loads(httpx_mock.get_request().content.decode())
+    assert body["side"] == side and body["tradeSide"] == trade
+    assert "reduceOnly" not in body
+    await ex.close()
+
+
+async def test_create_order_linear_hedge_refuses_reduce_only_and_bad_value() -> None:
+    from pycex.exceptions import InvalidOrderError
+
+    ex = Bitget(api_key="k", secret=SECRET, passphrase="p", market_type="linear")
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/USDT:USDT", "buy", "market", 0.01, reduce_only=True, trade_side="close")
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/USDT:USDT", "buy", "market", 0.01, trade_side="Both")
+    await ex.close()
+
+
 async def test_create_order_signature_matches_verbatim_wire_body(httpx_mock: HTTPXMock) -> None:
     """The prehash must cover the exact bytes sent on the wire, not a dict that
     gets re-serialized separately by httpx -- otherwise every real order

@@ -299,10 +299,28 @@ class Binance(BaseExchange):
         *,
         client_order_id: str | None = None,
         reduce_only: bool = False,
+        position_side: str | None = None,
     ) -> Order:
         """``reduce_only`` (USDT-M futures, one-way mode) sends ``reduceOnly=true``
-        (POST /fapi/v1/order); spot has no position to reduce, so it is refused."""
+        (POST /fapi/v1/order); spot has no position to reduce, so it is refused.
+
+        ``position_side`` (``"LONG"``/``"SHORT"``, hedge mode only) sends ``positionSide``. Binance does not
+        accept ``reduceOnly`` in hedge mode, so the two are mutually exclusive here: a hedge close is
+        ``side`` opposite to the position + ``position_side`` of that position."""
         native = self.to_native(symbol)
+        if position_side is not None:
+            if self.market_type != "linear" or str(position_side).upper() not in ("LONG", "SHORT"):
+                raise InvalidOrderError(
+                    "binance: position_side is LONG or SHORT on USDT-M futures only",
+                    code="positionSide",
+                    exchange="binance",
+                )
+            if reduce_only:
+                raise InvalidOrderError(
+                    "binance: reduceOnly cannot be sent in hedge mode (use position_side)",
+                    code="reduceOnly",
+                    exchange="binance",
+                )
         if reduce_only and self.market_type != "linear":
             raise InvalidOrderError(
                 "binance: reduce_only applies to USDT-M futures (market_type='linear') only",
@@ -317,6 +335,8 @@ class Binance(BaseExchange):
         }
         if reduce_only:
             params["reduceOnly"] = "true"
+        if position_side is not None:
+            params["positionSide"] = str(position_side).upper()
         if client_order_id is not None:
             params["newClientOrderId"] = client_order_id
         if price is not None:

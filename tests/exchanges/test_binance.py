@@ -392,6 +392,29 @@ async def test_create_order_linear_no_position_side(httpx_mock: HTTPXMock) -> No
     await ex.close()
 
 
+@pytest.mark.parametrize("side,pos", [("buy", "LONG"), ("sell", "LONG"), ("sell", "SHORT"), ("buy", "SHORT")])
+async def test_create_order_linear_hedge_position_side(httpx_mock: HTTPXMock, side: str, pos: str) -> None:
+    httpx_mock.add_response(json={"orderId": 1, "symbol": "BTCUSDT", "side": side.upper(), "type": "MARKET",
+                                  "origQty": "0.01", "executedQty": "0", "status": "NEW", "updateTime": 1})
+    ex = Binance(api_key="k", secret="s", market_type="linear")
+    await ex.create_order("BTC/USDT:USDT", side, "market", 0.01, position_side=pos)
+    req = httpx_mock.get_request()
+    assert req.url.params["positionSide"] == pos
+    assert "reduceOnly" not in req.url.params
+    await ex.close()
+
+
+async def test_create_order_linear_hedge_refuses_reduce_only_and_bad_side() -> None:
+    from pycex.exceptions import InvalidOrderError
+
+    ex = Binance(api_key="k", secret="s", market_type="linear")
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/USDT:USDT", "sell", "market", 0.01, reduce_only=True, position_side="LONG")
+    with pytest.raises(InvalidOrderError):
+        await ex.create_order("BTC/USDT:USDT", "sell", "market", 0.01, position_side="BOTH")
+    await ex.close()
+
+
 def test_parse_public_trade_side_is_the_taker_side() -> None:
     """``isBuyerMaker=true`` means the BUYER was the maker, so the taker SOLD.
 
