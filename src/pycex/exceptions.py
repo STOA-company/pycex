@@ -47,6 +47,8 @@ class RateLimitError(ExchangeError):
 
     retryable = True
     retry_after: float | None = None
+    #: HTTP status when the limit came from the transport (429), else None.
+    status_code: int | None = None
 
 
 class InsufficientBalanceError(ExchangeError):

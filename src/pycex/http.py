@@ -237,10 +237,7 @@ class HTTPClient:
     def _handle_response(self, resp: httpx.Response) -> Any:
         """Return the parsed JSON body. Shape (dict or list) depends on the endpoint."""
         if resp.status_code == 429:
-            ra = resp.headers.get("Retry-After")
-            err = RateLimitError("Rate limit exceeded", exchange="")
-            err.retry_after = float(ra) if ra and ra.replace(".", "", 1).isdigit() else None
-            raise err
+            raise self._rate_limit_error(resp)
         try:
             data: Any = resp.json()
         except ValueError:
@@ -255,6 +252,34 @@ class HTTPClient:
             code = err_dict.get("code") or err_dict.get("ret_code") or resp.status_code
             raise ExchangeError(msg, code=code)
         return data
+
+    def _rate_limit_error(self, resp: httpx.Response) -> RateLimitError:
+        """HTTP 429 stays a RateLimitError, but keeps what the body says.
+
+        The venue code (Binance ``-1003`` = IP request-weight limit / IP ban) and
+        the message ("... banned until <ms>") tell the caller whether to wait per
+        account or per IP; dropping them made every 429 look like an account
+        limit. Only the venue's own error mapper may name the code: a 429 whose
+        body maps to a non-rate-limit error is still reported as a rate limit.
+        """
+        try:
+            data: Any = resp.json()
+        except ValueError:
+            data = None
+        body: dict[str, Any] = data if isinstance(data, dict) else {}
+        err: RateLimitError | None = None
+        if self._error_mapper is not None and body:
+            mapped = self._error_mapper(resp.status_code, body)
+            if isinstance(mapped, RateLimitError):
+                err = mapped
+        if err is None:
+            msg = body.get("msg") or body.get("message") or "Rate limit exceeded"
+            code = body.get("code") if body.get("code") not in (None, "") else body.get("ret_code")
+            err = RateLimitError(str(msg), code=code, exchange="")
+        ra = resp.headers.get("Retry-After")
+        err.retry_after = float(ra) if ra and ra.replace(".", "", 1).isdigit() else None
+        err.status_code = 429
+        return err
 
     async def close(self) -> None:
         """Close the current client. The object is kept so that a later call can
