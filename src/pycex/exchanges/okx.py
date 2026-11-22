@@ -63,10 +63,10 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any, Literal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from pycex.auth import okx_headers
 from pycex.base import BaseExchange
@@ -75,6 +75,7 @@ from pycex.constants import (
     OKX_BASE,
     OKX_BROKER_ID,
     OKX_HISTORY_CANDLE_WEIGHT,
+    OKX_OAUTH_BASE,
     OKX_RECENT_CANDLE_WEIGHT,
 )
 from pycex.exceptions import (
@@ -140,6 +141,39 @@ def _resolve_broker_code(broker_code: str | None) -> str:
     return value
 
 
+def _validate_oauth_base_url(oauth_base_url: object) -> str:
+    """Fail-closed validation for the OAuth REST base URL."""
+    if (
+        not isinstance(oauth_base_url, str)
+        or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in oauth_base_url)
+        or "\\" in oauth_base_url
+        or "?" in oauth_base_url
+        or "#" in oauth_base_url
+    ):
+        raise ValueError("okx: oauth_base_url must be a clean https:// URL without query or fragment")
+    parsed = urlsplit(oauth_base_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query != ""
+        or parsed.fragment != ""
+    ):
+        raise ValueError("okx: oauth_base_url must be an https:// URL without userinfo, query, or fragment")
+    # Access port so malformed non-numeric/out-of-range ports fail closed with ValueError.
+    _ = parsed.port
+    return oauth_base_url.rstrip("/")
+
+
+def _validate_oauth_token(token: object) -> str:
+    """Reject empty, non-string, whitespace, control-char, or non-ASCII Bearer tokens."""
+    if not isinstance(token, str) or not token.strip() or any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in token):
+        raise AuthenticationError("okx: OAuth access token is unavailable or invalid")
+    return token
+
+
 class OKX(BaseExchange):
     name = "okx"
     # history-candles caps `limit` at 100 (the recent /market/candles endpoint
@@ -164,6 +198,8 @@ class OKX(BaseExchange):
         demo: bool | None = None,
         timeout: float = 30.0,
         broker_code: str | None = None,
+        oauth_token: Callable[[], str] | None = None,
+        oauth_base_url: str = OKX_OAUTH_BASE,
     ) -> None:
         #: Per-instance OKX broker code (order ``tag`` + ``broker-id`` header).
         #: ``None`` keeps the module constant (legacy). A non-None value wins even
@@ -172,6 +208,26 @@ class OKX(BaseExchange):
         #: One process may hold API-key and OAuth adapters side by side, each
         #: with its own broker code, which a module-wide constant cannot express.
         self._broker_code = _resolve_broker_code(broker_code)
+        self.sandbox = self._resolve_sandbox(sandbox, None, demo)
+        base_url = OKX_BASE
+        if oauth_token is not None:
+            # OAuth (Bearer) is an *alternative* to API-key signing, never a mix: an
+            # adapter that carried both would leave it ambiguous which identity an
+            # order is placed under. The token is a zero-argument callable so a
+            # caller whose tokens rotate (OKX refresh issues a new pair and the old
+            # access token stops working at once) is asked for the current one on
+            # every request instead of the adapter caching a stale string.
+            if not callable(oauth_token):
+                raise TypeError("okx: oauth_token must be a zero-argument callable returning the access token")
+            if api_key or secret or passphrase:
+                raise ValueError("okx: pass either API-key credentials or oauth_token, not both")
+            base_url = _validate_oauth_base_url(oauth_base_url)
+            if self.sandbox:
+                # OKX's broker docs do not say whether OAuth tokens work with the
+                # demo-trading header; refuse instead of guessing which account
+                # an order would land in.
+                raise ValueError("okx: OAuth with demo trading is not documented by OKX; refusing")
+        self._oauth_token = oauth_token
         self._api_key = api_key
         self._secret = secret
         self._passphrase = passphrase
@@ -182,7 +238,6 @@ class OKX(BaseExchange):
         #: :meth:`fetch_account_config` has run — never assumed. See
         #: :meth:`_spot_td_mode`.
         self._acct_level: str | None = None
-        self.sandbox = self._resolve_sandbox(sandbox, None, demo)
         self._markets: dict[str, Market] = {}
         self._rate_limiter = ExchangeRateLimiter(self.name, market_type)
         broker_headers: dict[str, str] = {}
@@ -190,7 +245,7 @@ class OKX(BaseExchange):
             broker_headers["broker-id"] = self._broker_code
         self._http = HTTPClient(
             # ExchangeRateLimiter is the sole admission gate; keep HTTPClient from delaying after signing.
-            OKX_BASE,
+            base_url,
             timeout=timeout,
             rate=float("inf"),
             default_headers=broker_headers,
@@ -237,7 +292,19 @@ class OKX(BaseExchange):
         result: list[Any] = data.get("data", [])
         return result
 
+    @property
+    def auth_mode(self) -> Literal["api_key", "oauth"]:
+        """Which identity private calls are made under. Read-only."""
+        return "api_key" if self._oauth_token is None else "oauth"
+
     def _auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
+        if self._oauth_token is not None:
+            # Read fresh on every request so a rotated token takes effect immediately.
+            # Never send an empty or control-character-bearing Bearer header: OKX
+            # would answer with an auth error that looks like a revoked grant
+            # (53000/53003) or treat injected control bytes as a malformed request.
+            token = _validate_oauth_token(self._oauth_token())
+            return {"Authorization": f"Bearer {token}"}
         headers = okx_headers(self._api_key, self._secret, self._passphrase, method, path, body)
         if self.sandbox:
             headers["x-simulated-trading"] = "1"
